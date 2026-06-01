@@ -1,0 +1,12 @@
+{
+  "$schema_comment": "RenderDoc MCP Bridge install targets. Paths may use ~, %VAR%, or $VAR.",
+  "targets": {
+    "official": {
+      "extension_dir": "%APPDATA%/qrenderdoc/extensions"
+    },
+    "qrenderzzs": {
+      "extension_dir": "%APPDATA%/qrenderzzs/extensions"
+    }
+  },
+  "default_targets": ["official", "qrenderzzs"]
+}

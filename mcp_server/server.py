@@ -201,6 +201,7 @@ def get_buffer_contents(
     resource_id: str,
     offset: int = 0,
     length: int = 0,
+    event_id: int | None = None,
 ) -> dict:
     """
     Read the contents of a buffer resource.
@@ -209,13 +210,17 @@ def get_buffer_contents(
         resource_id: The resource ID of the buffer to read
         offset: Byte offset to start reading from (default: 0)
         length: Number of bytes to read, 0 for entire buffer (default: 0)
+        event_id: Optional event ID to set as the current frame event before reading.
+                  Required for transient/internal buffers that only exist at a specific
+                  draw call (e.g. constant buffer uploads, scratch UAVs). Omit for
+                  persistent resources listed in GetBuffers().
 
     Returns buffer data as base64-encoded bytes along with metadata.
     """
-    return bridge.call(
-        "get_buffer_contents",
-        {"resource_id": resource_id, "offset": offset, "length": length},
-    )
+    params = {"resource_id": resource_id, "offset": offset, "length": length}
+    if event_id is not None:
+        params["event_id"] = event_id
+    return bridge.call("get_buffer_contents", params)
 
 
 @mcp.tool
@@ -281,6 +286,31 @@ def get_pipeline_state(event_id: int) -> dict:
 
 
 @mcp.tool
+def get_mesh_data(event_id: int) -> dict:
+    """
+    Extract decoded mesh data (index buffer + vertex attributes) for a draw call.
+
+    Reads the index buffer and bound vertex buffers at the given event, then decodes
+    each vertex attribute (POSITION, NORMAL, TEXCOORD, COLOR, etc.) according to the
+    input layout. Useful for inspecting geometry, exporting meshes, or analyzing
+    skinning / morph targets.
+
+    Args:
+        event_id: The event ID of the draw call to extract mesh data from
+
+    Returns a dict with:
+    - event_id, topology, num_indices, num_vertices, min_index, max_index
+    - indices: list of vertex indices (with baseVertex applied)
+    - attributes: list of {name, semantic_name, vertex_buffer_slot, byte_offset,
+                          format, components, values}
+      where values is a list[list[float|int]] of length num_vertices
+
+    Supports formats: float32, float16 (half), unorm8, snorm8, uint8/16/32.
+    """
+    return bridge.call("get_mesh_data", {"event_id": event_id})
+
+
+@mcp.tool
 def list_captures(directory: str) -> dict:
     """
     List all RenderDoc capture files (.rdc) in the specified directory.
@@ -313,6 +343,7 @@ def open_capture(capture_path: str) -> dict:
 
 def main():
     """Run the MCP server"""
+    # 注册 16 个 @mcp.tool ！！！
     mcp.run()
 
 

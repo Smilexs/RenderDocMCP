@@ -150,13 +150,74 @@ class PipelineService:
             except Exception:
                 pass
 
-            # Input assembly
+            # Input assembly (extended: layout + vertex buffers + index buffer)
             try:
-                ia = pipe.GetIAState()
-                if ia:
-                    pipeline_info["input_assembly"] = {"topology": str(ia.topology)}
-            except Exception:
-                pass
+                ia_info = {"topology": ""}
+                try:
+                    topo = pipe.GetPrimitiveTopology()
+                    ia_info["topology"] = str(topo)
+                except Exception:
+                    pass
+
+                # Vertex input layout (attributes / elements)
+                attributes = []
+                try:
+                    vinputs = pipe.GetVertexInputs()
+                    for vi in vinputs:
+                        attr = {
+                            "name": getattr(vi, "name", ""),
+                            "semantic_name": getattr(vi, "semanticName", ""),
+                            "semantic_index": getattr(vi, "semanticIndex", 0),
+                            "vertex_buffer_slot": getattr(vi, "vertexBuffer", 0),
+                            "byte_offset": getattr(vi, "byteOffset", 0),
+                            "per_instance": bool(getattr(vi, "perInstance", False)),
+                            "instance_rate": getattr(vi, "instanceRate", 0),
+                            "format_name": str(vi.format.Name()) if hasattr(vi, "format") else "",
+                            "format_byte_width": getattr(vi.format, "ElementSize", lambda: 0)() if hasattr(vi, "format") else 0,
+                            "format_component_count": getattr(vi.format, "compCount", 0) if hasattr(vi, "format") else 0,
+                            "format_component_type": str(vi.format.compType) if hasattr(vi, "format") else "",
+                            "format_component_bytewidth": getattr(vi.format, "compByteWidth", 0) if hasattr(vi, "format") else 0,
+                            "format_bgra_order": bool(getattr(vi.format, "BGRAOrder", lambda: False)()) if hasattr(vi, "format") else False,
+                        }
+                        attributes.append(attr)
+                except Exception as e:
+                    ia_info["vertex_inputs_error"] = str(e)
+                ia_info["vertex_inputs"] = attributes
+
+                # Vertex buffer bindings
+                vbuffers = []
+                try:
+                    vbs = pipe.GetVBuffers()
+                    for idx, vb in enumerate(vbs):
+                        if vb.resourceId == rd.ResourceId.Null():
+                            continue
+                        vbuffers.append({
+                            "slot": idx,
+                            "resource_id": str(vb.resourceId),
+                            "byte_offset": getattr(vb, "byteOffset", 0),
+                            "byte_stride": getattr(vb, "byteStride", 0),
+                            "byte_size": getattr(vb, "byteSize", 0),
+                        })
+                except Exception as e:
+                    ia_info["vertex_buffers_error"] = str(e)
+                ia_info["vertex_buffers"] = vbuffers
+
+                # Index buffer
+                try:
+                    ib = pipe.GetIBuffer()
+                    if ib and ib.resourceId != rd.ResourceId.Null():
+                        ia_info["index_buffer"] = {
+                            "resource_id": str(ib.resourceId),
+                            "byte_offset": getattr(ib, "byteOffset", 0),
+                            "byte_stride": getattr(ib, "byteStride", 0),
+                            "byte_size": getattr(ib, "byteSize", 0),
+                        }
+                except Exception as e:
+                    ia_info["index_buffer_error"] = str(e)
+
+                pipeline_info["input_assembly"] = ia_info
+            except Exception as e:
+                pipeline_info["input_assembly"] = {"error": str(e)}
 
             result["pipeline"] = pipeline_info
 

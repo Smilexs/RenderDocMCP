@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any
 
-
+# 桥接 IPC 目录，%TEMP%/renderdoc_mcp/
 # IPC directory (must match renderdoc_extension/socket_server.py)
 IPC_DIR = os.path.join(tempfile.gettempdir(), "renderdoc_mcp")
 REQUEST_FILE = os.path.join(IPC_DIR, "request.json")

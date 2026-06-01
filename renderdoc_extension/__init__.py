@@ -20,7 +20,7 @@ try:
 except ImportError:
     _has_qrenderdoc = False
 
-
+# 由 RenderDoc 加载扩展时回调 ！！！
 def register(version, ctx):
     """
     Called when extension is loaded.

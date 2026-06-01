@@ -10,6 +10,7 @@ from .services import (
     SearchService,
     ResourceService,
     PipelineService,
+    MeshService,
 )
 
 
@@ -40,6 +41,7 @@ class RenderDocFacade:
         self._search = SearchService(ctx, self._invoke)
         self._resource = ResourceService(ctx, self._invoke)
         self._pipeline = PipelineService(ctx, self._invoke)
+        self._mesh = MeshService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -114,9 +116,9 @@ class RenderDocFacade:
 
     # ==================== Resource Operations ====================
 
-    def get_buffer_contents(self, resource_id, offset=0, length=0):
+    def get_buffer_contents(self, resource_id, offset=0, length=0, event_id=None):
         """Get buffer data"""
-        return self._resource.get_buffer_contents(resource_id, offset, length)
+        return self._resource.get_buffer_contents(resource_id, offset, length, event_id)
 
     def get_texture_info(self, resource_id):
         """Get texture metadata"""
@@ -135,3 +137,9 @@ class RenderDocFacade:
     def get_pipeline_state(self, event_id):
         """Get full pipeline state at an event"""
         return self._pipeline.get_pipeline_state(event_id)
+
+    # ==================== Mesh Operations ====================
+
+    def get_mesh_data(self, event_id):
+        """Extract decoded mesh data (IB + VB attributes) at an event"""
+        return self._mesh.get_mesh_data(event_id)

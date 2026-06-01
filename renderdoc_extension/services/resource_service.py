@@ -26,14 +26,21 @@ class ResourceService:
                 return tex
         return None
 
-    def get_buffer_contents(self, resource_id, offset=0, length=0):
-        """Get buffer data"""
+    def get_buffer_contents(self, resource_id, offset=0, length=0, event_id=None):
+        """Get buffer data. Optionally set frame event first for transient buffers."""
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
 
         result = {"data": None, "error": None}
 
         def callback(controller):
+            # Optionally set frame event so transient buffers are valid
+            if event_id is not None:
+                try:
+                    controller.SetFrameEvent(int(event_id), True)
+                except Exception:
+                    pass
+
             # Parse resource ID
             try:
                 rid = Parsers.parse_resource_id(resource_id)
@@ -41,27 +48,39 @@ class ResourceService:
                 result["error"] = "Invalid resource ID: %s" % resource_id
                 return
 
-            # Find buffer
+            # Find buffer (may not exist in GetBuffers() for transient/internal buffers)
             buf_desc = None
-            for buf in controller.GetBuffers():
-                if buf.resourceId == rid:
-                    buf_desc = buf
-                    break
+            try:
+                for buf in controller.GetBuffers():
+                    if buf.resourceId == rid:
+                        buf_desc = buf
+                        break
+            except Exception:
+                pass
 
-            if not buf_desc:
-                result["error"] = "Buffer not found: %s" % resource_id
+            actual_length = length if length > 0 else (buf_desc.length if buf_desc else 0)
+
+            try:
+                data = controller.GetBufferData(rid, offset, actual_length)
+            except Exception as e:
+                result["error"] = "GetBufferData failed for %s: %s" % (resource_id, str(e))
                 return
 
-            # Get data
-            actual_length = length if length > 0 else buf_desc.length
-            data = controller.GetBufferData(rid, offset, actual_length)
+            # Diagnostic: list buffer count
+            try:
+                bufs_count = len(controller.GetBuffers())
+            except Exception:
+                bufs_count = -1
 
             result["data"] = {
                 "resource_id": resource_id,
                 "length": len(data),
-                "total_size": buf_desc.length,
+                "total_size": buf_desc.length if buf_desc else len(data),
                 "offset": offset,
                 "content_base64": base64.b64encode(data).decode("ascii"),
+                "_diag_buffers_count": bufs_count,
+                "_diag_rid_id": rid.id if hasattr(rid, 'id') else -1,
+                "_diag_buf_desc_found": buf_desc is not None,
             }
 
         self._invoke(callback)

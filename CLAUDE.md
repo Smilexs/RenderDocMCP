@@ -1,134 +1,168 @@
-# RenderDoc MCP Server
+# RenderDoc MCP 服务器
 
-RenderDoc UI拡張機能として動作するMCPサーバー。AIアシスタントがRenderDocのキャプチャデータにアクセスし、DirectX 11/12のグラフィックスデバッグを支援する。
+作为 RenderDoc UI 扩展运行的 MCP 服务器。AI 助手可以访问 RenderDoc 的捕获数据，并辅助图形调试。
 
-## アーキテクチャ
+## 架构
 
-**ハイブリッドプロセス分離方式**:
+**混合进程隔离方式**：
 
 ```
 Claude/AI Client (stdio)
         │
         ▼
-MCP Server Process (標準Python + FastMCP 2.0)
-        │ File-based IPC (%TEMP%/renderdoc_mcp/)
+MCP Server Process (标准 Python + FastMCP 2.0)
+        │ 基于文件的 IPC (%TEMP%/renderdoc_mcp/)
         ▼
 RenderDoc Process (Extension + File Polling)
 ```
 
-## プロジェクト構成
+## 项目结构
 
 ```
 RenderDocMCP/
-├── mcp_server/                        # MCPサーバー
-│   ├── server.py                      # FastMCPエントリーポイント
-│   ├── config.py                      # 設定
+├── mcp_server/                        # MCP 服务器
+│   ├── server.py                      # FastMCP 入口，注册 MCP 工具
+│   ├── config.py                      # 配置
 │   └── bridge/
-│       └── client.py                  # ファイルベースIPCクライアント
+│       └── client.py                  # 基于文件的 IPC 客户端
 │
-├── renderdoc_extension/               # RenderDoc拡張機能
+├── renderdoc_extension/               # RenderDoc 扩展
 │   ├── __init__.py                    # register()/unregister()
-│   ├── extension.json                 # マニフェスト
-│   ├── socket_server.py               # ファイルベースIPCサーバー
-│   ├── request_handler.py             # リクエスト処理
-│   └── renderdoc_facade.py            # RenderDoc APIラッパー
+│   ├── extension.json                 # 扩展清单
+│   ├── socket_server.py               # 基于文件的 IPC 服务端
+│   ├── request_handler.py             # 请求路由与处理
+│   ├── renderdoc_facade.py            # RenderDoc API Facade
+│   ├── services/                      # 具体功能服务
+│   │   ├── capture_manager.py         # 捕获文件管理
+│   │   ├── action_service.py          # Draw/Action 查询与统计
+│   │   ├── search_service.py          # Shader/Texture/Resource 反向搜索
+│   │   ├── resource_service.py        # Buffer/Texture 数据读取
+│   │   ├── pipeline_service.py        # Shader 与 Pipeline State
+│   │   └── mesh_service.py            # Mesh 顶点/索引解码
+│   └── utils/                         # 解析、序列化、辅助函数
 │
-└── scripts/
-    └── install_extension.py           # 拡張機能インストール
+├── docs/                              # 文档资源
+├── scripts/
+│   └── install_extension.py           # 扩展安装脚本
+├── 1.安装RenderDoc扩展.bat             # Windows 快捷安装脚本
+├── 2.安装MCP服务器.bat                 # Windows 快捷安装脚本
+└── 3.启动MCP Server.bat                # Windows 调试启动脚本
 ```
 
-## MCPツール
+## MCP 工具
 
-| ツール名 | 説明 |
-|---------|------|
-| `list_captures` | 指定ディレクトリ内の.rdcファイル一覧を取得 |
-| `open_capture` | キャプチャファイルを開く（既存キャプチャは自動で閉じる） |
-| `get_capture_status` | キャプチャ読込状態確認 |
-| `get_draw_calls` | ドローコール一覧（階層構造、フィルタリング対応） |
-| `get_frame_summary` | フレーム全体の統計情報（ドローコール数、マーカー一覧等） |
-| `find_draws_by_shader` | シェーダー名でドローコールを逆引き検索 |
-| `find_draws_by_texture` | テクスチャ名でドローコールを逆引き検索 |
-| `find_draws_by_resource` | リソースIDでドローコールを逆引き検索 |
-| `get_draw_call_details` | 特定ドローコールの詳細 |
-| `get_action_timings` | アクションのGPU実行時間を取得 |
-| `get_shader_info` | シェーダーソース/定数バッファ |
-| `get_buffer_contents` | バッファデータ取得（オフセット/長さ指定可） |
-| `get_texture_info` | テクスチャメタデータ |
-| `get_texture_data` | テクスチャピクセルデータ取得（mip/slice/3Dスライス対応） |
-| `get_pipeline_state` | パイプライン状態全体 |
+当前可用接口与 `README.md` 保持一致：
 
-### get_draw_calls フィルタリングオプション
+| 工具名 | 说明 |
+|--------|------|
+| `get_capture_status` | 检查捕获文件的加载状态 |
+| `get_frame_summary` | 获取当前帧的统计信息（API、Draw 数、Marker 列表等） |
+| `get_draw_calls` | 以层级结构获取绘制调用列表 |
+| `get_draw_call_details` | 获取指定绘制调用的详细信息 |
+| `get_action_timings` | 获取 GPU 计时（按 event_id / marker 过滤） |
+| `find_draws_by_shader` | 按 Shader 名查找使用该 Shader 的 Draw |
+| `find_draws_by_texture` | 按贴图名查找使用该贴图的 Draw |
+| `find_draws_by_resource` | 按 Resource ID 精确查找使用该资源的 Draw |
+| `get_shader_info` | 获取着色器源代码和常量缓冲区的值 |
+| `get_buffer_contents` | 获取缓冲区内容 (Base64)，可选 `event_id` 读取瞬态缓冲 |
+| `get_texture_info` | 获取纹理元数据 |
+| `get_texture_data` | 获取纹理像素数据 (Base64) |
+| `get_pipeline_state` | 获取管线状态（含 IA 布局、VB/IB 绑定） |
+| `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析） |
+| `list_captures` | 列出目录中的 .rdc 文件 |
+| `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
+
+### get_draw_calls 过滤选项
 
 ```python
 get_draw_calls(
-    include_children=True,      # 子アクションを含める
-    marker_filter="Camera.Render",  # このマーカー配下のみ取得
-    exclude_markers=["GUI.Repaint", "UIR.DrawChain"],  # 除外するマーカー
-    event_id_min=7372,          # event_id範囲の開始
-    event_id_max=7600,          # event_id範囲の終了
-    only_actions=True,          # マーカーを除外（ドローコールのみ）
-    flags_filter=["Drawcall", "Dispatch"],  # 特定フラグのみ
+    include_children=True,      # 包含子 Action
+    marker_filter="Camera.Render",  # 只获取该 Marker 下的内容
+    exclude_markers=["GUI.Repaint", "UIR.DrawChain"],  # 要排除的 Marker
+    event_id_min=7372,          # event_id 范围起点
+    event_id_max=7600,          # event_id 范围终点
+    only_actions=True,          # 排除 Marker，只返回实际 Action
+    flags_filter=["Drawcall", "Dispatch"],  # 只返回指定 flag
 )
 ```
 
-### キャプチャ管理ツール
+### 捕获管理工具
 
 ```python
-# ディレクトリ内のキャプチャファイルを列挙
+# 列出目录中的捕获文件
 list_captures(directory="D:\\captures")
 # → {"count": 3, "captures": [{"filename": "game.rdc", "path": "...", "size_bytes": 12345, "modified_time": "..."}, ...]}
 
-# キャプチャファイルを開く（既存キャプチャは自動で閉じられる）
+# 打开捕获文件（已有捕获会自动关闭）
 open_capture(capture_path="D:\\captures\\game.rdc")
 # → {"success": true, "filename": "game.rdc", "api": "D3D11"}
 ```
 
-### 逆引き検索ツール
+### 反向搜索工具
 
 ```python
-# シェーダー名で検索（部分一致）
+# 按 Shader 名搜索（部分匹配）
 find_draws_by_shader(shader_name="Toon", stage="pixel")
 
-# テクスチャ名で検索（部分一致）
+# 按贴图名搜索（部分匹配）
 find_draws_by_texture(texture_name="CharacterSkin")
 
-# リソースIDで検索（完全一致）
+# 按资源 ID 搜索（完全匹配）
 find_draws_by_resource(resource_id="ResourceId::12345")
 ```
 
-### GPU タイミング取得
+### GPU 计时获取
 
 ```python
-# 全アクションのタイミングを取得
+# 获取所有 Action 的计时
 get_action_timings()
 # → {"available": true, "unit": "CounterUnit.Seconds", "timings": [...], "total_duration_ms": 12.5, "count": 150}
 
-# 特定のイベントIDのみ取得
+# 只获取指定 event_id
 get_action_timings(event_ids=[100, 200, 300])
 
-# マーカーでフィルタリング
+# 按 Marker 过滤
 get_action_timings(marker_filter="Camera.Render", exclude_markers=["GUI.Repaint"])
 ```
 
-**注意**: GPUタイミングカウンターはハードウェア/ドライバーによっては利用できない場合があります。
-`available: false` が返された場合、そのキャプチャではタイミング情報を取得できません。
+**注意**：GPU 计时计数器可能因硬件或驱动而不可用。
+如果返回 `available: false`，说明该捕获无法获取计时信息。
 
-## 通信プロトコル
+### 资源与几何数据
 
-ファイルベースIPC:
-- IPCディレクトリ: `%TEMP%/renderdoc_mcp/`
-- `request.json`: リクエスト（MCPサーバー → RenderDoc）
-- `response.json`: レスポンス（RenderDoc → MCPサーバー）
-- `lock`: 書き込み中ロックファイル
-- ポーリング間隔: 100ms（RenderDoc側）
+```python
+# 读取缓冲区的一部分
+get_buffer_contents(resource_id="ResourceId::123", offset=256, length=512)
 
-## 開発ノート
+# 读取某个 Draw 上的瞬态缓冲（例如常量缓冲上传）
+get_buffer_contents(resource_id="ResourceId::123", event_id=456)
 
-- RenderDoc内蔵Pythonにはsocket/QtNetworkモジュールがないため、ファイルベースIPCを採用
-- RenderDoc拡張機能はPython 3.6標準ライブラリのみ使用
-- ReplayControllerへのアクセスは`BlockInvoke`経由で行う
+# 获取纹理像素数据
+get_texture_data(resource_id="ResourceId::123", mip=0, slice=0)
 
-## 参考リンク
+# 提取 Draw 的 IB + 解码后的顶点属性
+get_mesh_data(event_id=123)
+```
+
+## 通信协议
+
+基于文件的 IPC：
+
+- IPC 目录：`%TEMP%/renderdoc_mcp/`
+- `request.json`：请求（MCP 服务器 → RenderDoc）
+- `response.json`：响应（RenderDoc → MCP 服务器）
+- `lock`：写入中的锁文件
+- 轮询间隔：RenderDoc 侧 100ms，MCP 服务器侧 50ms
+
+## 开发说明
+
+- RenderDoc 内置 Python 缺少 `socket` / `QtNetwork` 模块，因此采用基于文件的 IPC。
+- RenderDoc 扩展侧需要兼容 RenderDoc 内置 Python 3.6 标准库。
+- 访问 `ReplayController` 必须通过 `BlockInvoke`，确保操作运行在 RenderDoc replay 线程。
+- `renderdoc_facade.py` 只做分发，具体逻辑放在 `renderdoc_extension/services/` 中。
+- 新增 MCP 工具时，需要同时更新 `mcp_server/server.py`、`renderdoc_extension/request_handler.py`、`renderdoc_extension/renderdoc_facade.py` 和对应 service。
+
+## 参考链接
 
 - [FastMCP](https://github.com/jlowin/fastmcp)
 - [RenderDoc Python API](https://renderdoc.org/docs/python_api/index.html)

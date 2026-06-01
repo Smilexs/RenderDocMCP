@@ -26,6 +26,7 @@ class RequestHandler:
             "get_texture_info": self._handle_get_texture_info,
             "get_texture_data": self._handle_get_texture_data,
             "get_pipeline_state": self._handle_get_pipeline_state,
+            "get_mesh_data": self._handle_get_mesh_data,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
         }
@@ -143,7 +144,8 @@ class RequestHandler:
             raise ValueError("resource_id is required")
         offset = params.get("offset", 0)
         length = params.get("length", 0)
-        return self.facade.get_buffer_contents(resource_id, offset, length)
+        event_id = params.get("event_id")
+        return self.facade.get_buffer_contents(resource_id, offset, length, event_id)
 
     def _handle_get_texture_info(self, params):
         """Handle get_texture_info request"""
@@ -169,6 +171,13 @@ class RequestHandler:
         if event_id is None:
             raise ValueError("event_id is required")
         return self.facade.get_pipeline_state(int(event_id))
+
+    def _handle_get_mesh_data(self, params):
+        """Handle get_mesh_data request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.get_mesh_data(int(event_id))
 
     def _handle_list_captures(self, params):
         """Handle list_captures request"""
