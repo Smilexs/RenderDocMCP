@@ -27,6 +27,8 @@ class RequestHandler:
             "get_texture_data": self._handle_get_texture_data,
             "get_pipeline_state": self._handle_get_pipeline_state,
             "get_mesh_data": self._handle_get_mesh_data,
+            "get_world_matrix": self._handle_get_world_matrix,
+            "export_mesh_to_file": self._handle_export_mesh_to_file,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
         }
@@ -178,6 +180,37 @@ class RequestHandler:
         if event_id is None:
             raise ValueError("event_id is required")
         return self.facade.get_mesh_data(int(event_id))
+
+    def _handle_get_world_matrix(self, params):
+        """Handle get_world_matrix request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        o2w_offset = params.get("o2w_offset", 32)
+        w2o_offset = params.get("w2o_offset", 96)
+        return self.facade.get_world_matrix(int(event_id), int(o2w_offset), int(w2o_offset))
+
+    def _handle_export_mesh_to_file(self, params):
+        """Handle export_mesh_to_file request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        output_path = params.get("output_path")
+        if not output_path:
+            raise ValueError("output_path is required")
+        return self.facade.export_mesh_to_file(
+            int(event_id),
+            output_path,
+            bool(params.get("bake_world", True)),
+            int(params.get("pos_slot", 0)),
+            int(params.get("normal_slot", 1)),
+            int(params.get("tangent_slot", 2)),
+            int(params.get("uv0_slot", 3)),
+            int(params.get("uv1_slot", 4)),
+            int(params.get("extra_slot", 5)),
+            int(params.get("o2w_offset", 32)),
+            int(params.get("w2o_offset", 96)),
+        )
 
     def _handle_list_captures(self, params):
         """Handle list_captures request"""

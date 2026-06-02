@@ -54,7 +54,7 @@ RenderDoc Process (Extension)
 
 ### 时序图
 
-![调用流程时序图](docs/mermaid-diagram-调用流程.png)
+<!-- ![调用流程时序图](docs/mermaid-diagram-调用流程.png) -->
 
 ```mermaid
 sequenceDiagram
@@ -199,7 +199,7 @@ uv tool update-shell  # 添加到 PATH
 |--------|------|
 | `get_capture_status` | 检查捕获文件的加载状态 |
 | `get_frame_summary` | 获取当前帧的统计信息（API、Draw 数、Marker 列表等） |
-| `get_draw_calls` | 以层级结构获取绘制调用列表 |
+| `get_draw_calls` | 以层级结构获取绘制调用列表，支持 marker、event_id、flags 等过滤 |
 | `get_draw_call_details` | 获取指定绘制调用的详细信息 |
 | `get_action_timings` | 获取 GPU 计时（按 event_id / marker 过滤） |
 | `find_draws_by_shader` | 按 Shader 名查找使用该 Shader 的 Draw |
@@ -210,7 +210,9 @@ uv tool update-shell  # 添加到 PATH
 | `get_texture_info` | 获取纹理元数据 |
 | `get_texture_data` | 获取纹理像素数据 (Base64) |
 | `get_pipeline_state` | 获取管线状态（含 IA 布局、VB/IB 绑定） |
-| `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析） |
+| `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析，返回对象空间数据） |
+| `get_world_matrix` | 从 VS cb0 读取 Unity `unity_ObjectToWorld` / `unity_WorldToObject` 矩阵 |
+| `export_mesh_to_file` | 将 Draw 的顶点/索引数据写入 JSON 文件，可烘焙到世界空间，适合大模型导出 |
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
 
@@ -220,6 +222,9 @@ uv tool update-shell  # 添加到 PATH
 
 ```
 get_draw_calls(include_children=true)
+
+# 只看指定 marker 下的 draw/dispatch，并限制 event_id 范围
+get_draw_calls(marker_filter="Character", event_id_min=100, event_id_max=300, only_actions=true, flags_filter=["Drawcall", "Dispatch"])
 ```
 
 ### 获取着色器信息
@@ -266,8 +271,31 @@ get_buffer_contents(resource_id="ResourceId::123", event_id=456)
 ### 提取 Draw 的几何数据
 
 ```
-# 一次性拿到 IB + 解码后的所有顶点属性
+# 一次性拿到 IB + 解码后的所有顶点属性；适合小网格或调试抽样
 get_mesh_data(event_id=123)
+```
+
+### 读取 Unity 世界矩阵
+
+```
+# 从 VS cb0 读取 unity_ObjectToWorld / unity_WorldToObject
+get_world_matrix(event_id=123)
+
+# 如果 shader 中矩阵偏移不同，可根据 get_pipeline_state 中的 $Globals 变量偏移调整
+get_world_matrix(event_id=123, o2w_offset=32, w2o_offset=96)
+```
+
+### 导出网格到文件
+
+```
+# 将大网格直接写到 RenderDoc 所在机器的 JSON 文件，避免 MCP 返回体过大
+export_mesh_to_file(event_id=123, output_path="D:\\Temp\\mesh_123.json")
+
+# 默认会烘焙到世界空间；如需保持对象空间，可关闭 bake_world
+export_mesh_to_file(event_id=123, output_path="D:\\Temp\\mesh_123_object.json", bake_world=false)
+
+# 如果顶点属性所在 slot 与默认 Unity 布局不同，可显式指定
+export_mesh_to_file(event_id=123, output_path="D:\\Temp\\mesh_123.json", pos_slot=0, normal_slot=1, tangent_slot=2, uv0_slot=3)
 ```
 
 ## 要求

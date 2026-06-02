@@ -1,52 +1,65 @@
 @echo off
-chcp 65001 >nul
 setlocal
-
-REM ============================================================
-REM RenderDoc MCP Bridge - 启动 MCP Server
-REM
-REM 正常情况下 MCP Server 由 AI 客户端（Claude Desktop / Claude Code）
-REM 通过 stdio 自动拉起，这里提供一个手动启动入口，便于：
-REM   - 验证 renderdoc-mcp 是否安装成功
-REM   - 调试 Server 启动错误
-REM   - 查看依赖加载日志
-REM
-REM 注意: MCP Server 使用 stdio 协议，手动启动后窗口会等待 stdin 输入。
-REM       这并非卡死，关闭窗口即可。
-REM ============================================================
+chcp 65001 >nul
 
 cd /d "%~dp0"
 
 echo.
-echo === 启动 RenderDoc MCP Server ===
+echo === RenderDoc MCP Server ===
+echo.
+echo This window runs the MCP server in stdio mode.
+echo If it stays open and waits, that is normal.
+echo Close this window to stop the server.
 echo.
 
-where renderdoc-mcp >nul 2>nul
-if errorlevel 1 (
-    echo [警告] PATH 中未找到 renderdoc-mcp 命令
-    echo 尝试通过 uv tool run 启动...
+set "LOCAL_BIN=%USERPROFILE%\.local\bin"
+if exist "%LOCAL_BIN%" set "PATH=%LOCAL_BIN%;%PATH%"
+
+set "EXITCODE=0"
+
+if exist "%LOCAL_BIN%\renderdoc-mcp.exe" (
+    echo Starting: "%LOCAL_BIN%\renderdoc-mcp.exe"
     echo.
-    where uv >nul 2>nul
-    if errorlevel 1 (
-        echo [错误] 既找不到 renderdoc-mcp，也找不到 uv。
-        echo 请先运行 "2.安装MCP服务器.bat" 完成安装。
-        pause
-        exit /b 1
-    )
-    uv tool run renderdoc-mcp
-    goto :end
+    call "%LOCAL_BIN%\renderdoc-mcp.exe"
+    set "EXITCODE=%ERRORLEVEL%"
+    goto :done
 )
 
-echo 提示：
-echo   - MCP Server 通过 stdio 与客户端通信，窗口等待输入是正常的
-echo   - 请确保 RenderDoc 已启动并启用了 "RenderDoc MCP Bridge" 扩展
-echo   - 关闭此窗口即可停止 Server
-echo.
+where renderdoc-mcp.exe >nul 2>nul
+if not errorlevel 1 (
+    echo Starting: renderdoc-mcp
+    echo.
+    call renderdoc-mcp
+    set "EXITCODE=%ERRORLEVEL%"
+    goto :done
+)
 
-renderdoc-mcp
+if exist "%LOCAL_BIN%\uv.exe" (
+    echo renderdoc-mcp was not found. Trying uv from:
+    echo   "%LOCAL_BIN%\uv.exe"
+    echo.
+    call "%LOCAL_BIN%\uv.exe" run python -m mcp_server.server
+    set "EXITCODE=%ERRORLEVEL%"
+    goto :done
+)
 
-:end
+where uv.exe >nul 2>nul
+if not errorlevel 1 (
+    echo renderdoc-mcp was not found. Trying uv from PATH.
+    echo.
+    call uv run python -m mcp_server.server
+    set "EXITCODE=%ERRORLEVEL%"
+    goto :done
+)
+
+echo ERROR: Could not find renderdoc-mcp.exe or uv.exe.
+echo Run "2.install MCP server" first, or add this directory to PATH:
+echo   %LOCAL_BIN%
+set "EXITCODE=1"
+
+:done
 echo.
-echo MCP Server 已停止。
+echo MCP Server stopped. Exit code: %EXITCODE%
+echo.
 pause
-endlocal
+exit /b %EXITCODE%

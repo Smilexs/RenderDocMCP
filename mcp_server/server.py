@@ -311,6 +311,97 @@ def get_mesh_data(event_id: int) -> dict:
 
 
 @mcp.tool
+def get_world_matrix(
+    event_id: int,
+    o2w_offset: int = 32,
+    w2o_offset: int = 96,
+) -> dict:
+    """
+    Read the Unity world transform matrices (unity_ObjectToWorld / unity_WorldToObject)
+    from the vertex shader constant buffer cb0 ($Globals) at a draw call.
+
+    get_mesh_data returns OBJECT-space vertices. To place an extracted model at the
+    same world position as in the captured frame, you need this matrix. Use it to
+    bake vertices to world space, or to derive a GameObject Transform.
+
+    Args:
+        event_id: The event ID of the draw call.
+        o2w_offset: Byte offset of unity_ObjectToWorld inside cb0 (default 32; read it
+                    from get_pipeline_state -> VS $Globals variable byte_offset if it differs).
+        w2o_offset: Byte offset of unity_WorldToObject inside cb0 (default 96).
+
+    Returns:
+    - object_to_world_columns: 4x4 as 4 stored float4s (these are matrix COLUMNS;
+      worldPos = c0*x + c1*y + c2*z + c3).
+    - world_to_object_rows: 4x4 stored float4s (used as dp3 rows for normals).
+    - object_to_world_raw / world_to_object_raw: flat 16-float arrays.
+    - _diag: which cbuffer accessor + resource were used (for debugging).
+    """
+    return bridge.call("get_world_matrix", {
+        "event_id": event_id,
+        "o2w_offset": o2w_offset,
+        "w2o_offset": w2o_offset,
+    })
+
+
+@mcp.tool
+def export_mesh_to_file(
+    event_id: int,
+    output_path: str,
+    bake_world: bool = True,
+    pos_slot: int = 0,
+    normal_slot: int = 1,
+    tangent_slot: int = 2,
+    uv0_slot: int = 3,
+    uv1_slot: int = 4,
+    extra_slot: int = 5,
+    o2w_offset: int = 32,
+    w2o_offset: int = 96,
+) -> dict:
+    """
+    Extract the mesh at a draw call and WRITE the per-vertex data to a JSON file on
+    the RenderDoc host machine, returning only small metadata.
+
+    Use this instead of get_mesh_data for real models: large meshes (thousands of
+    vertices) produce JSON too big to return through the MCP transport, which fails
+    or gets truncated. This writes the heavy arrays straight to disk.
+
+    The output JSON has: num_indices, num_vertices, indices, position, and (when
+    present) normal, tangent (xyzw), uv0, uv1, uv2_extra. Field names are by SEMANTIC
+    (mapped from the vertex-buffer slots below), ready for a Unity mesh builder.
+
+    Args:
+        event_id: The draw call event ID.
+        output_path: Absolute path on the RenderDoc host to write the JSON to.
+        bake_world: If True (default), transform position/normal/tangent into WORLD
+            space using the VS cb0 matrices (replicating the shader). The resulting
+            GameObject sits at Transform origin and matches the captured frame, so
+            multiple extracted draws line up with each other automatically.
+        pos_slot/normal_slot/tangent_slot/uv0_slot/uv1_slot/extra_slot: which
+            vertex-buffer slot carries each semantic. Defaults match the common Unity
+            character VS (v0=POSITION v1=NORMAL v2=TANGENT v3=UV0 v4=UV1 v5=extra).
+            Confirm against the VS disassembly; adjust if the layout differs.
+        o2w_offset/w2o_offset: byte offsets of the matrices in cb0 (see get_world_matrix).
+
+    Returns metadata: output_path, counts, which channels were written, position
+    world-space bounds, the world matrix used, and the slot map actually applied.
+    """
+    return bridge.call("export_mesh_to_file", {
+        "event_id": event_id,
+        "output_path": output_path,
+        "bake_world": bake_world,
+        "pos_slot": pos_slot,
+        "normal_slot": normal_slot,
+        "tangent_slot": tangent_slot,
+        "uv0_slot": uv0_slot,
+        "uv1_slot": uv1_slot,
+        "extra_slot": extra_slot,
+        "o2w_offset": o2w_offset,
+        "w2o_offset": w2o_offset,
+    })
+
+
+@mcp.tool
 def list_captures(directory: str) -> dict:
     """
     List all RenderDoc capture files (.rdc) in the specified directory.

@@ -143,3 +143,19 @@ class RenderDocFacade:
     def get_mesh_data(self, event_id):
         """Extract decoded mesh data (IB + VB attributes) at an event"""
         return self._mesh.get_mesh_data(event_id)
+
+    def get_world_matrix(self, event_id, o2w_offset=32, w2o_offset=96):
+        """Read VS cb0 Unity ObjectToWorld / WorldToObject matrices at an event"""
+        return self._mesh.get_world_matrix(event_id, o2w_offset, w2o_offset)
+
+    def export_mesh_to_file(self, event_id, output_path, bake_world=True,
+                            pos_slot=0, normal_slot=1, tangent_slot=2,
+                            uv0_slot=3, uv1_slot=4, extra_slot=5,
+                            o2w_offset=32, w2o_offset=96):
+        """Decode mesh at an event, optionally bake to world space, write JSON to disk"""
+        return self._mesh.export_mesh_to_file(
+            event_id, output_path, bake_world,
+            pos_slot, normal_slot, tangent_slot,
+            uv0_slot, uv1_slot, extra_slot,
+            o2w_offset, w2o_offset,
+        )
