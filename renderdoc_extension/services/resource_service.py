@@ -89,6 +89,125 @@ class ResourceService:
             raise ValueError(result["error"])
         return result["data"]
 
+    def export_texture_to_file(self, resource_id, output_path, file_type="PNG",
+                               mip=0, slice=0, sample=0, alpha="Preserve",
+                               event_id=None):
+        """Save a texture to an image file ON THE RENDERDOC HOST via controller.SaveTexture.
+
+        Avoids returning multi-MB base64 through the MCP transport (which overflows /
+        truncates for 1024^2+ textures). Returns only small metadata.
+
+        file_type: one of PNG, JPG, BMP, TGA, HDR, EXR, DDS (case-insensitive).
+        alpha: Preserve | Discard | BlendToColor | BlendToCheckerboard.
+        event_id: optional frame event to set first (needed for transient render targets).
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                tex_desc = self._find_texture_by_id(controller, resource_id)
+                if not tex_desc:
+                    result["error"] = "Texture not found: %s" % resource_id
+                    return
+
+                if event_id is not None:
+                    try:
+                        controller.SetFrameEvent(int(event_id), True)
+                    except Exception:
+                        pass
+
+                # Resolve file type enum
+                ft_name = str(file_type).upper()
+                ft_map = {
+                    "PNG": rd.FileType.PNG,
+                    "JPG": rd.FileType.JPG,
+                    "JPEG": rd.FileType.JPG,
+                    "BMP": rd.FileType.BMP,
+                    "TGA": rd.FileType.TGA,
+                    "HDR": rd.FileType.HDR,
+                    "EXR": rd.FileType.EXR,
+                    "DDS": rd.FileType.DDS,
+                }
+                if ft_name not in ft_map:
+                    result["error"] = "Unsupported file_type '%s' (use PNG/JPG/BMP/TGA/HDR/EXR/DDS)" % file_type
+                    return
+
+                # Resolve alpha mapping enum (handle US/UK spelling variations defensively)
+                alpha_name = str(alpha)
+                blend_color = getattr(rd.AlphaMapping, "BlendToColour",
+                                      getattr(rd.AlphaMapping, "BlendToColor", rd.AlphaMapping.Preserve))
+                alpha_map = {
+                    "Preserve": rd.AlphaMapping.Preserve,
+                    "Discard": rd.AlphaMapping.Discard,
+                    "BlendToColor": blend_color,
+                    "BlendToColour": blend_color,
+                    "BlendToCheckerboard": rd.AlphaMapping.BlendToCheckerboard,
+                }
+                alpha_enum = alpha_map.get(alpha_name, rd.AlphaMapping.Preserve)
+
+                # Validate mip / slice
+                use_mip = mip
+                if ft_name != "DDS":
+                    if use_mip < 0 or use_mip >= tex_desc.mips:
+                        result["error"] = "Invalid mip %d (texture has %d mips)" % (use_mip, tex_desc.mips)
+                        return
+
+                texsave = rd.TextureSave()
+                texsave.resourceId = tex_desc.resourceId
+                texsave.destType = ft_map[ft_name]
+                texsave.alpha = alpha_enum
+                texsave.mip = use_mip
+                texsave.slice.sliceIndex = slice
+                texsave.sample.sampleIndex = sample
+
+                # Typeless formats (e.g. R16_TYPELESS depth/shadow) need an explicit
+                # typecast so SaveTexture can interpret the bits.
+                try:
+                    fmt_name = str(tex_desc.format.Name())
+                    if "TYPELESS" in fmt_name.upper():
+                        texsave.typeCast = rd.CompType.UNorm
+                except Exception:
+                    pass
+
+                # Ensure destination directory exists on the host
+                try:
+                    import os as _os
+                    _dir = _os.path.dirname(output_path)
+                    if _dir and not _os.path.isdir(_dir):
+                        _os.makedirs(_dir, exist_ok=True)
+                except Exception:
+                    pass
+
+                ok = controller.SaveTexture(texsave, output_path)
+                if not ok:
+                    result["error"] = "SaveTexture returned False for %s -> %s" % (resource_id, output_path)
+                    return
+
+                result["data"] = {
+                    "resource_id": resource_id,
+                    "output_path": output_path,
+                    "file_type": ft_name,
+                    "width": tex_desc.width,
+                    "height": tex_desc.height,
+                    "mip": use_mip,
+                    "slice": slice,
+                    "sample": sample,
+                    "format": str(tex_desc.format.Name()),
+                    "mip_levels": tex_desc.mips,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "export_texture_to_file error: %s\n%s" % (str(e), traceback.format_exc())
+
+        self._invoke(callback)
+
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
     def get_texture_info(self, resource_id):
         """Get texture metadata"""
         if not self.ctx.IsCaptureLoaded():

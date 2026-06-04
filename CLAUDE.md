@@ -162,6 +162,52 @@ get_mesh_data(event_id=123)
 - `renderdoc_facade.py` 只做分发，具体逻辑放在 `renderdoc_extension/services/` 中。
 - 新增 MCP 工具时，需要同时更新 `mcp_server/server.py`、`renderdoc_extension/request_handler.py`、`renderdoc_extension/renderdoc_facade.py` 和对应 service。
 
+## 维护 / 扩展开发（改动本仓库源码时必读）
+
+代码分两部分，**改哪部分决定重启什么**：
+
+| 改动文件 | 角色 | 生效需要 |
+|---|---|---|
+| `mcp_server/server.py` | MCP 工具 schema（工具名/参数签名/docstring） | **重启 MCP server** |
+| `renderdoc_extension/**`（service/facade/handler） | 在 RenderDoc 进程内执行的实现 | **重启 RenderDoc**（不是 MCP server） |
+
+### 部署步骤（扩展改动后）
+
+```bash
+cd <仓库根目录>          # 即本 CLAUDE.md 所在目录
+python -m py_compile renderdoc_extension/services/<改的文件>.py   # 先语法自检
+python scripts/install_extension.py install --target all          # 拷贝到所有 extensions 目录
+# 清理已安装副本的字节码缓存，避免加载旧 .pyc
+find "$APPDATA/qrenderzzs/extensions/renderdoc_mcp_bridge" -name __pycache__ -type d -exec rm -rf {} +
+```
+然后**重启 RenderDoc + 重新打开截帧**（必要时 Tools → Manage Extensions 重新启用插件）。
+安装目标目录的多目标配置见 README「自定义 / 自编译 RenderDoc（多目标支持）」。
+
+### ⚠️ 关键坑：文件拷贝不会热重载
+
+RenderDoc 在启动时把扩展模块 import 进内存；**只拷贝文件 / 改源码不会让运行中的进程重新加载**。
+新增/改完工具后，运行中的 RenderDoc 仍执行**旧代码**。必须重启 RenderDoc 才生效。
+（同理 `server.py` schema 改动后，运行中的 MCP server 仍是旧 schema，必须重启 MCP server。）
+
+### 诊断规则
+
+- **报错 `<built-in method BlockInvoke ...> returned NULL without setting an error`**：
+  说明 RenderDoc 回调里抛了**未捕获的 Python 异常**。
+  - 若你刚把回调体用 `try/except + traceback` 包好了却仍报这条原始信息 → **运行中的 RenderDoc 还是旧代码**，
+    需要重启（不是再改代码）。重启后要么成功，要么回传带 traceback 的真实错误。
+  - 写扩展回调时**务必**整体 `try/except` 并把 `traceback.format_exc()` 写进 `result["error"]`，
+    否则异常会变成无信息的 "returned NULL"。
+- **大二进制别走 inline**：纹理用 `export_texture_to_file`、大模型用 `export_mesh_to_file`，
+  宿主侧落盘只回传元信息。`get_texture_data` / `get_mesh_data` 的 base64 会经过对话上下文，
+  1024² 贴图或大网格单次即溢出窗口（`get_mesh_data` 会 `Expecting ',' delimiter` 截断报错）。
+
+### 已修复记录
+
+- **cb0 数值读取（2026-06）**：`get_pipeline_state` / `get_shader_info` 现已能取到 cbuffer 变量的
+  **完整数值**（含嵌套 `_hlslcc_mtx4x4...` 矩阵的逐行 `members`）。修复点：`pipeline_service.py` 用
+  `pipe.GetConstantBlock(stage, i, 0)` 返回 `UsedDescriptor`（取代不存在的 `GetConstantBuffer`），
+  入口点用 `pipe.GetShaderEntryPoint(stage)`。
+
 ## 参考链接
 
 - [FastMCP](https://github.com/jlowin/fastmcp)

@@ -183,6 +183,8 @@ def get_action_timings(
 def get_shader_info(
     event_id: int,
     stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "compute"],
+    disassembly_target: str | None = None,
+    include_bytecode: bool = False,
 ) -> dict:
     """
     Get shader information for a specific stage at a given event.
@@ -190,10 +192,29 @@ def get_shader_info(
     Args:
         event_id: The event ID to inspect the shader at
         stage: The shader stage (vertex, hull, domain, geometry, pixel, compute)
+        disassembly_target: Optional case-insensitive substring to select a
+            disassembly target other than the default ISA. On D3D11/D3D12 pass
+            "HLSL" to get the "HLSL (DXBC_2_HLSL)" decompiled output (keeps the
+            original variable names r0..rN / textures2D_N_ / vN semantics) when
+            the build ships that target. The full list is always returned in
+            "available_disassembly_targets" so you can discover valid names.
+        include_bytecode: If True, also return the raw compiled bytecode
+            base64-encoded in "bytecode_base64" (DXBC on D3D11/12, SPIR-V on
+            Vulkan) plus "bytecode_encoding"/"bytecode_length", so it can be
+            decompiled externally (e.g. cmd_Decompiler.exe -D file.dxbc).
 
-    Returns shader disassembly, constant buffer values, and resource bindings.
+    Returns shader disassembly, available disassembly targets, the chosen
+    target, constant buffer values, resource bindings, and optionally raw
+    bytecode. Use disassembly_target="HLSL" first; if it is missing from
+    available_disassembly_targets, fall back to include_bytecode=True and
+    decompile the DXBC with the skill's bundled tool.
     """
-    return bridge.call("get_shader_info", {"event_id": event_id, "stage": stage})
+    params = {"event_id": event_id, "stage": stage}
+    if disassembly_target is not None:
+        params["disassembly_target"] = disassembly_target
+    if include_bytecode:
+        params["include_bytecode"] = True
+    return bridge.call("get_shader_info", params)
 
 
 @mcp.tool
@@ -263,6 +284,59 @@ def get_texture_data(
     if depth_slice is not None:
         params["depth_slice"] = depth_slice
     return bridge.call("get_texture_data", params)
+
+
+@mcp.tool
+def export_texture_to_file(
+    resource_id: str,
+    output_path: str,
+    file_type: str = "PNG",
+    mip: int = 0,
+    slice: int = 0,
+    sample: int = 0,
+    alpha: str = "Preserve",
+    event_id: int | None = None,
+) -> dict:
+    """
+    Save a texture to an image file ON THE RENDERDOC HOST, returning only metadata.
+
+    Use this instead of get_texture_data for real textures: a 1024x1024 RGBA8 texture
+    is 4 MB, whose base64 (~5.6M chars) overflows / truncates the MCP transport and
+    the agent context. SaveTexture decodes + encodes the image on the host side and
+    writes it straight to disk, so nothing heavy crosses the wire.
+
+    The host performs format conversion (incl. block-compressed / typeless decode) and
+    the correct vertical orientation for the file format, so the written PNG is already
+    upright (no manual flip needed regardless of graphics API).
+
+    Args:
+        resource_id: Texture resource ID (e.g. "11059" or "ResourceId::11059").
+        output_path: Absolute path on the RenderDoc host to write to (extension should
+            match file_type, e.g. ...\\T_albedo.png).
+        file_type: PNG (default), JPG, BMP, TGA, HDR, EXR, or DDS. PNG/BMP/TGA/DDS keep
+            alpha; JPG/HDR drop it. DDS preserves all mips/slices and exact format.
+        mip: Mip level to save (default 0). Ignored for DDS (saves all).
+        slice: Array slice or cube face (default 0).
+        sample: MSAA sample index (default 0).
+        alpha: Preserve | Discard | BlendToColor | BlendToCheckerboard (default Preserve).
+        event_id: Optional frame event to set first (needed for transient render targets;
+            not needed for persistent material textures).
+
+    Returns metadata: output_path, file_type, width, height, mip, slice, sample, format,
+    mip_levels.
+    """
+    params = {
+        "resource_id": resource_id,
+        "output_path": output_path,
+        "file_type": file_type,
+        "mip": mip,
+        "slice": slice,
+        "sample": sample,
+        "alpha": alpha,
+    }
+    if event_id is not None:
+        params["event_id"] = event_id
+    return bridge.call("export_texture_to_file", params)
 
 
 @mcp.tool

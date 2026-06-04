@@ -208,7 +208,8 @@ uv tool update-shell  # 添加到 PATH
 | `get_shader_info` | 获取着色器源代码和常量缓冲区的值 |
 | `get_buffer_contents` | 获取缓冲区内容 (Base64)，可选 `event_id` 读取瞬态缓冲 |
 | `get_texture_info` | 获取纹理元数据 |
-| `get_texture_data` | 获取纹理像素数据 (Base64) |
+| `get_texture_data` | 获取纹理像素数据 (Base64)，**仅限小贴图**（base64 经上下文，大贴图会溢出） |
+| `export_texture_to_file` | **将纹理写入图片文件（宿主侧 SaveTexture），大贴图首选**，自动处理 typeless/解压/朝向 |
 | `get_pipeline_state` | 获取管线状态（含 IA 布局、VB/IB 绑定） |
 | `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析，返回对象空间数据） |
 | `get_world_matrix` | 从 VS cb0 读取 Unity `unity_ObjectToWorld` / `unity_WorldToObject` 矩阵 |
@@ -254,6 +255,27 @@ get_texture_data(resource_id="ResourceId::456", slice=3)
 # 获取 3D 纹理的指定深度切片
 get_texture_data(resource_id="ResourceId::789", depth_slice=5)
 ```
+
+### 导出纹理到图片文件（大贴图首选）
+
+```
+# 宿主侧直接落盘 PNG，base64 不经过对话上下文，任意大小都稳定
+export_texture_to_file(
+    resource_id="11059",
+    output_path="E:\\proj\\Textures\\T_Albedo.png",
+    file_type="PNG")          # PNG/JPG/BMP/TGA/HDR/EXR/DDS
+
+# 阴影/深度等 typeless 格式会自动 typecast 为 UNorm 导出
+export_texture_to_file(resource_id="14452",
+    output_path="E:\\proj\\Textures\\T_Shadow.png")
+
+# 瞬态渲染目标需先定位到产生它的 event
+export_texture_to_file(resource_id="...", output_path="...\\rt.png", event_id=313)
+```
+
+> ⚠️ 为什么不用 `get_texture_data` 导大图：它返回的 base64 **会流经对话上下文**，
+> 1024² RGBA8 ≈ 1.4M token，单张即溢出上下文窗口。`export_texture_to_file`
+> 调用 RenderDoc 原生 `SaveTexture`，在宿主侧解码+编码后写盘，只回传元信息。
 
 ### 部分获取缓冲区数据
 

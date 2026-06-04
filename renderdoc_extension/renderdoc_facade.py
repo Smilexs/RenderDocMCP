@@ -128,11 +128,22 @@ class RenderDocFacade:
         """Get texture pixel data"""
         return self._resource.get_texture_data(resource_id, mip, slice, sample, depth_slice)
 
+    def export_texture_to_file(self, resource_id, output_path, file_type="PNG",
+                               mip=0, slice=0, sample=0, alpha="Preserve",
+                               event_id=None):
+        """Save a texture to an image file on the host via controller.SaveTexture"""
+        return self._resource.export_texture_to_file(
+            resource_id, output_path, file_type, mip, slice, sample, alpha, event_id
+        )
+
     # ==================== Pipeline Operations ====================
 
-    def get_shader_info(self, event_id, stage):
+    def get_shader_info(self, event_id, stage, disassembly_target=None,
+                        include_bytecode=False):
         """Get shader information for a specific stage"""
-        return self._pipeline.get_shader_info(event_id, stage)
+        return self._pipeline.get_shader_info(
+            event_id, stage, disassembly_target, include_bytecode
+        )
 
     def get_pipeline_state(self, event_id):
         """Get full pipeline state at an event"""

@@ -2,6 +2,8 @@
 Pipeline state service for RenderDoc.
 """
 
+import base64
+
 import renderdoc as rd
 
 from ..utils import Parsers, Serializers, Helpers
@@ -14,8 +16,21 @@ class PipelineService:
         self.ctx = ctx
         self._invoke = invoke_fn
 
-    def get_shader_info(self, event_id, stage):
-        """Get shader information for a specific stage"""
+    def get_shader_info(self, event_id, stage, disassembly_target=None,
+                        include_bytecode=False):
+        """Get shader information for a specific stage.
+
+        Args:
+            event_id: event to inspect.
+            stage: shader stage name.
+            disassembly_target: optional substring (case-insensitive) to pick a
+                disassembly target other than the default. e.g. "HLSL" selects
+                the "HLSL (DXBC_2_HLSL)" target on D3D11/12 if the plugin is
+                present. If None, uses the first (default ISA) target.
+            include_bytecode: if True, also return the raw shader bytecode
+                (DXBC on D3D11/12, SPIR-V on Vulkan) base64-encoded, so callers
+                can decompile it externally (e.g. cmd_Decompiler.exe).
+        """
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
 
@@ -44,13 +59,45 @@ class PipelineService:
             # Get disassembly
             try:
                 targets = controller.GetDisassemblyTargets(True)
+                # Expose all available targets so callers can discover e.g.
+                # "HLSL (DXBC_2_HLSL)" without trial and error.
+                shader_info["available_disassembly_targets"] = list(targets)
+                chosen = None
                 if targets:
+                    if disassembly_target:
+                        needle = disassembly_target.lower()
+                        for t in targets:
+                            if needle in str(t).lower():
+                                chosen = t
+                                break
+                        if chosen is None:
+                            shader_info["disassembly_target_error"] = (
+                                "No target matched '%s'. Available: %s"
+                                % (disassembly_target, list(targets))
+                            )
+                    if chosen is None:
+                        chosen = targets[0]
                     disasm = controller.DisassembleShader(
-                        pipe.GetGraphicsPipelineObject(), reflection, targets[0]
+                        pipe.GetGraphicsPipelineObject(), reflection, chosen
                     )
                     shader_info["disassembly"] = disasm
+                    shader_info["disassembly_target"] = str(chosen)
             except Exception as e:
                 shader_info["disassembly_error"] = str(e)
+
+            # Optionally return raw bytecode (DXBC / SPIR-V) for external
+            # decompilation. reflection.rawBytes are the original compiled bytes.
+            if include_bytecode and reflection is not None:
+                try:
+                    raw = bytes(reflection.rawBytes)
+                    shader_info["bytecode_base64"] = base64.b64encode(raw).decode("ascii")
+                    shader_info["bytecode_length"] = len(raw)
+                    try:
+                        shader_info["bytecode_encoding"] = str(reflection.encoding)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    shader_info["bytecode_error"] = str(e)
 
             # Get constant buffer info
             if reflection:
@@ -364,32 +411,58 @@ class PipelineService:
         return samplers
 
     def _get_stage_cbuffers(self, controller, pipe, stage, reflection):
-        """Get constant buffers for a stage from shader reflection"""
+        """Get constant buffers for a stage with variable values (方案A)"""
         cbuffers = []
+        if not reflection:
+            return cbuffers
+
+        shader_id = reflection.resourceId
         try:
-            if not reflection:
-                return cbuffers
+            entry = pipe.GetShaderEntryPoint(stage)
+        except Exception:
+            entry = reflection.entryPoint if hasattr(reflection, "entryPoint") else ""
+        try:
+            pipe_obj = pipe.GetGraphicsPipelineObject()
+        except Exception:
+            pipe_obj = rd.ResourceId.Null()
 
-            for cb in reflection.constantBlocks:
-                slot = cb.bindPoint if hasattr(cb, 'bindPoint') else cb.fixedBindNumber
-                cb_info = {
-                    "slot": slot,
-                    "name": cb.name,
-                    "byte_size": cb.byteSize,
-                    "variable_count": len(cb.variables) if cb.variables else 0,
-                    "variables": [],
-                }
+        for i, cb in enumerate(reflection.constantBlocks):
+            slot = cb.bindPoint if hasattr(cb, 'bindPoint') else cb.fixedBindNumber
+            cb_info = {
+                "slot": slot,
+                "name": cb.name,
+                "byte_size": cb.byteSize,
+                "variable_count": len(cb.variables) if cb.variables else 0,
+                "variables": [],
+            }
+
+            try:
+                used = pipe.GetConstantBlock(stage, i, 0)
+                desc = used.descriptor
+                buf_id = desc.resource
+
+                variables = controller.GetCBufferVariableContents(
+                    pipe_obj,
+                    shader_id,
+                    stage,
+                    entry,
+                    i,
+                    buf_id,
+                    getattr(desc, "byteOffset", 0),
+                    getattr(desc, "byteSize", 0),
+                )
+                cb_info["variables"] = Serializers.serialize_variables(variables)
+            except Exception as e:
+                import traceback
+                cb_info["error"] = "%s | %s" % (str(e), traceback.format_exc().splitlines()[-1])
                 if cb.variables:
-                    for var in cb.variables:
-                        cb_info["variables"].append({
-                            "name": var.name,
-                            "byte_offset": var.byteOffset,
-                            "type": str(var.type.name) if var.type else "",
-                        })
-                cbuffers.append(cb_info)
+                    cb_info["variables"] = [{
+                        "name": var.name,
+                        "byte_offset": var.byteOffset,
+                        "type": str(var.type.name) if var.type else "",
+                    } for var in cb.variables]
 
-        except Exception as e:
-            cbuffers.append({"error": str(e)})
+            cbuffers.append(cb_info)
 
         return cbuffers
 
@@ -428,6 +501,18 @@ class PipelineService:
     def _get_cbuffer_info(self, controller, pipe, reflection, stage):
         """Get constant buffer information and values"""
         cbuffers = []
+        if not reflection:
+            return cbuffers
+
+        shader_id = reflection.resourceId
+        try:
+            entry = pipe.GetShaderEntryPoint(stage)
+        except Exception:
+            entry = reflection.entryPoint if hasattr(reflection, "entryPoint") else ""
+        try:
+            pipe_obj = pipe.GetGraphicsPipelineObject()
+        except Exception:
+            pipe_obj = rd.ResourceId.Null()
 
         for i, cb in enumerate(reflection.constantBlocks):
             cb_info = {
@@ -438,21 +523,24 @@ class PipelineService:
             }
 
             try:
-                bind = pipe.GetConstantBuffer(stage, i, 0)
-                if bind.resourceId != rd.ResourceId.Null():
-                    variables = controller.GetCBufferVariableContents(
-                        pipe.GetGraphicsPipelineObject(),
-                        reflection.resourceId,
-                        stage,
-                        reflection.entryPoint,
-                        i,
-                        bind.resourceId,
-                        bind.byteOffset,
-                        bind.byteSize,
-                    )
-                    cb_info["variables"] = Serializers.serialize_variables(variables)
+                used = pipe.GetConstantBlock(stage, i, 0)
+                desc = used.descriptor
+                buf_id = desc.resource
+
+                variables = controller.GetCBufferVariableContents(
+                    pipe_obj,
+                    shader_id,
+                    stage,
+                    entry,
+                    i,
+                    buf_id,
+                    getattr(desc, "byteOffset", 0),
+                    getattr(desc, "byteSize", 0),
+                )
+                cb_info["variables"] = Serializers.serialize_variables(variables)
             except Exception as e:
-                cb_info["error"] = str(e)
+                import traceback
+                cb_info["error"] = "%s | %s" % (str(e), traceback.format_exc().splitlines()[-1])
 
             cbuffers.append(cb_info)
 

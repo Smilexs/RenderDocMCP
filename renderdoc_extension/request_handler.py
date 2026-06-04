@@ -25,6 +25,7 @@ class RequestHandler:
             "get_buffer_contents": self._handle_get_buffer_contents,
             "get_texture_info": self._handle_get_texture_info,
             "get_texture_data": self._handle_get_texture_data,
+            "export_texture_to_file": self._handle_export_texture_to_file,
             "get_pipeline_state": self._handle_get_pipeline_state,
             "get_mesh_data": self._handle_get_mesh_data,
             "get_world_matrix": self._handle_get_world_matrix,
@@ -137,7 +138,11 @@ class RequestHandler:
             raise ValueError("event_id is required")
         if stage is None:
             raise ValueError("stage is required")
-        return self.facade.get_shader_info(int(event_id), stage)
+        disassembly_target = params.get("disassembly_target")
+        include_bytecode = params.get("include_bytecode", False)
+        return self.facade.get_shader_info(
+            int(event_id), stage, disassembly_target, include_bytecode
+        )
 
     def _handle_get_buffer_contents(self, params):
         """Handle get_buffer_contents request"""
@@ -166,6 +171,26 @@ class RequestHandler:
         sample = params.get("sample", 0)
         depth_slice = params.get("depth_slice")  # None = full volume
         return self.facade.get_texture_data(resource_id, mip, slice_idx, sample, depth_slice)
+
+    def _handle_export_texture_to_file(self, params):
+        """Handle export_texture_to_file request"""
+        resource_id = params.get("resource_id")
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        output_path = params.get("output_path")
+        if not output_path:
+            raise ValueError("output_path is required")
+        event_id = params.get("event_id")
+        return self.facade.export_texture_to_file(
+            resource_id,
+            output_path,
+            params.get("file_type", "PNG"),
+            int(params.get("mip", 0)),
+            int(params.get("slice", 0)),
+            int(params.get("sample", 0)),
+            params.get("alpha", "Preserve"),
+            None if event_id is None else int(event_id),
+        )
 
     def _handle_get_pipeline_state(self, params):
         """Handle get_pipeline_state request"""
