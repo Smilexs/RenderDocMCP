@@ -88,7 +88,7 @@ sequenceDiagram
 ### 关键设计点
 
 - **没有 socket，用文件 IPC**：RenderDoc 内嵌 Python 3.6 缺少 `socket` / `QtNetwork`，所以用 lock 文件 + JSON 文件做信号同步。`lock` 存在 = 写入中，避免读到半截 JSON。
-- **服务分层**：Facade 只做分发，具体逻辑分散在 `services/` 下 6 个 Service，底层共享 `utils/`（解析、序列化、helper），便于扩展新工具。
+- **服务分层**：Facade 只做分发，具体逻辑分散在 `services/` 下 7 个 Service，底层共享 `utils/`（解析、序列化、helper），便于扩展新工具。
 - **BlockInvoke 线程模型**：访问 `ReplayController` 必须经 `BlockInvoke` 排到 replay 线程，否则 RenderDoc 会崩溃，这是 Facade 强制约束。
 - **菜单注册**：扩展加载时还会在 RenderDoc 的 `Tools` 菜单注册 "MCP Bridge → Status" 项，方便确认桥接是否在运行。
 
@@ -189,7 +189,7 @@ uv tool update-shell  # 添加到 PATH
 
 ## 使用方法
 
-1. 启动 RenderDoc，并打开捕获文件 (.rdc)
+1. 启动 RenderDoc，并打开捕获文件 (.rdc)，或用 `capture_frame` 启动程序并自动抓帧
 2. 从 MCP 客户端（如 Claude）访问 RenderDoc 数据
 
 ## MCP 工具列表
@@ -200,6 +200,12 @@ uv tool update-shell  # 添加到 PATH
 | `get_capture_status` | 检查捕获文件的加载状态 |
 | `get_frame_summary` | 获取当前帧的统计信息（API、Draw 数、Marker 列表等） |
 | `get_draw_calls` | 以层级结构获取绘制调用列表，支持 marker、event_id、flags 等过滤 |
+| `list_passes` | 列出 marker 或按 RT 变化推断出的 Render Pass 区间 |
+| `get_pass_info` | 获取某个 event 所在 Pass 的 draw/dispatch 列表与统计 |
+| `get_pass_attachments` | 获取某个 Pass 的 color/depth attachments |
+| `get_pass_statistics` | 获取每个 Pass 的 draw/dispatch/triangle/RT 尺寸统计 |
+| `get_pass_deps` | 构建 Pass 之间的资源读写依赖图 |
+| `find_unused_targets` | 查找写入后未贡献到最终输出的渲染目标/资源 |
 | `get_draw_call_details` | 获取指定绘制调用的详细信息 |
 | `get_action_timings` | 获取 GPU 计时（按 event_id / marker 过滤） |
 | `enumerate_counters` | 列出当前捕获可用的 GPU performance counters |
@@ -212,10 +218,16 @@ uv tool update-shell  # 添加到 PATH
 | `find_draws_by_resource` | 按 Resource ID 精确查找使用该资源的 Draw |
 | `get_shader_info` | 获取着色器源代码和常量缓冲区的值 |
 | `get_bound_textures` | 获取指定 event/stage 绑定的纹理，并推断 albedo/normal/roughness 等用途 |
+| `list_cbuffers` | 列出指定 shader stage 绑定的常量缓冲区 |
+| `get_cbuffer_contents` | 读取指定常量缓冲区的变量名、类型和值 |
+| `list_shaders` | 扫描整帧 draw/dispatch，列出唯一 Shader 及使用次数 |
+| `search_shaders` | 在全局 Shader 反汇编文本中搜索关键字 |
 | `get_buffer_contents` | 获取缓冲区内容 (Base64)，可选 `event_id` 读取瞬态缓冲 |
 | `get_textures` | 列出当前捕获中的所有纹理资源 |
 | `get_buffers` | 列出当前捕获中的所有 buffer 资源 |
 | `get_resources` | 列出当前捕获中的所有 RenderDoc resources |
+| `get_resource_info` | 获取任意 Resource 的详细元数据（texture/buffer/resource） |
+| `get_resource_usage` | 获取 Resource 在整帧中的使用历史与读写分类 |
 | `get_texture_info` | 获取纹理元数据 |
 | `get_texture_data` | 获取纹理像素数据 (Base64)，**仅限小贴图**（base64 经上下文，大贴图会溢出） |
 | `pick_pixel` | 读取指定纹理/RT 的单个像素 RGBA 值 |
@@ -227,6 +239,7 @@ uv tool update-shell  # 添加到 PATH
 | `export_mesh_to_file` | 将 Draw 的顶点/索引数据写入 JSON 文件，可烘焙到世界空间，适合大模型导出 |
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
+| `capture_frame` | 通过 RenderDoc 启动目标程序，等待若干帧后抓取一帧并自动打开 |
 | `launch_renderdoc` | 启动 qrenderdoc 并打开 .rdc，等待 MCP Bridge ready |
 
 ## 使用示例
@@ -244,6 +257,44 @@ get_draw_calls(marker_filter="Character", event_id_min=100, event_id_max=300, on
 
 ```
 get_shader_info(event_id=123, stage="pixel")
+```
+
+### 常量缓冲区读取
+
+```
+# stage 支持 vs/hs/ds/gs/ps/cs，也支持 vertex/pixel/compute 等全名
+list_cbuffers(stage="ps", event_id=123)
+
+# index 来自 list_cbuffers 返回值
+get_cbuffer_contents(stage="ps", index=0, event_id=123)
+```
+
+### Shader 全局索引与搜索
+
+```
+# 扫描整帧 draw/dispatch，列出唯一 shader 与首次出现 event
+list_shaders(max_events=10000, max_shaders=200)
+
+# 在反汇编中搜索关键字；D3D 可优先尝试 disassembly_target="HLSL"
+search_shaders(pattern="_BaseColor", stage="ps", limit=20, disassembly_target="HLSL")
+```
+
+### Pass / Frame 结构分析
+
+```
+# 列出 marker-based pass；无 marker 时按 render target 变化推断 synthetic pass
+list_passes()
+
+# 查询某个 event 所在 pass 的 draw/dispatch 列表
+get_pass_info(event_id=123)
+
+# 查询 pass 附件、统计和资源依赖
+get_pass_attachments(event_id=123)
+get_pass_statistics()
+get_pass_deps()
+
+# 查找写入后未进入最终输出链路的目标资源
+find_unused_targets()
 ```
 
 ### 获取管线状态
@@ -301,6 +352,31 @@ get_buffer_contents(resource_id="ResourceId::123", offset=256, length=512)
 # 读取某个 Draw 上的瞬态缓冲（例如常量缓冲上传）
 get_buffer_contents(resource_id="ResourceId::123", event_id=456)
 ```
+
+### 资源详情与使用历史
+
+```
+# 获取 texture/buffer/resource 的详细元数据
+get_resource_info(resource_id="ResourceId::123")
+
+# 获取整帧 ResourceUsage 历史，含 event 名称和 read/write 分类
+get_resource_usage(resource_id="ResourceId::123")
+```
+
+### 实时启动程序并抓帧
+
+```
+capture_frame(
+    exe_path="D:\\Game\\Game.exe",
+    working_dir="D:\\Game",
+    cmd_line="-windowed",
+    delay_frames=100,
+    output_path="D:\\captures\\game_auto.rdc",
+    timeout_seconds=60)
+```
+
+> `capture_frame` 需要 qrenderdoc 中已经加载 MCP Bridge，并依赖当前 RenderDoc Python 绑定暴露
+> `ExecuteAndInject` / `CreateTargetControl` 或对应 `RENDERDOC_*` 接口。
 
 ### 提取 Draw 的几何数据
 

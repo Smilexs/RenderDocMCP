@@ -677,6 +677,308 @@ class PipelineService:
             raise ValueError(result["error"])
         return result["pipeline"]
 
+    def list_cbuffers(self, stage, event_id=None):
+        """List constant buffers bound to one shader stage."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                if event_id is not None:
+                    controller.SetFrameEvent(int(event_id), True)
+                pipe = controller.GetPipelineState()
+                stage_enum = Parsers.parse_stage(stage)
+                reflection = pipe.GetShaderReflection(stage_enum)
+                if not reflection:
+                    result["data"] = {
+                        "stage": self._stage_name(stage_enum),
+                        "event_id": event_id,
+                        "count": 0,
+                        "cbuffers": [],
+                        "note": "No shader reflection for this stage",
+                    }
+                    return
+
+                cbuffers = []
+                for i, cb in enumerate(getattr(reflection, "constantBlocks", []) or []):
+                    cbuffers.append({
+                        "index": i,
+                        "name": getattr(cb, "name", ""),
+                        "bind_set": getattr(cb, "fixedBindSetOrSpace", 0),
+                        "bind_slot": getattr(cb, "fixedBindNumber", getattr(cb, "bindPoint", i)),
+                        "byte_size": getattr(cb, "byteSize", 0),
+                        "buffer_backed": bool(getattr(cb, "bufferBacked", True)),
+                        "variable_count": len(getattr(cb, "variables", []) or []),
+                    })
+
+                result["data"] = {
+                    "stage": self._stage_name(stage_enum),
+                    "event_id": event_id,
+                    "count": len(cbuffers),
+                    "cbuffers": cbuffers,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "list_cbuffers error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def get_cbuffer_contents(self, stage, index, event_id=None):
+        """Read variables from one constant buffer block."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                if event_id is not None:
+                    controller.SetFrameEvent(int(event_id), True)
+                pipe = controller.GetPipelineState()
+                stage_enum = Parsers.parse_stage(stage)
+                reflection = pipe.GetShaderReflection(stage_enum)
+                if not reflection:
+                    result["error"] = "No shader reflection for stage %s" % stage
+                    return
+
+                cbuffers = self._get_stage_cbuffers(
+                    controller, pipe, stage_enum, reflection)
+                index_int = int(index)
+                if index_int < 0 or index_int >= len(cbuffers):
+                    result["error"] = "Constant buffer index %d out of range (count=%d)" % (
+                        index_int, len(cbuffers))
+                    return
+
+                data = dict(cbuffers[index_int])
+                data.update({
+                    "index": index_int,
+                    "stage": self._stage_name(stage_enum),
+                    "event_id": event_id,
+                })
+                result["data"] = data
+            except Exception as e:
+                import traceback
+                result["error"] = "get_cbuffer_contents error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def list_shaders(self, max_events=10000, max_shaders=200):
+        """List unique shaders used by draw/dispatch events in the capture."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                records = self._collect_unique_shaders(
+                    controller, int(max_events), int(max_shaders))
+                shaders = [self._public_shader_record(record) for record in records]
+                result["data"] = {
+                    "count": len(shaders),
+                    "max_events_scanned": int(max_events),
+                    "shaders": shaders,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "list_shaders error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def search_shaders(self, pattern, stage=None, limit=50,
+                       max_events=10000, disassembly_target=None):
+        """Search disassembly text across unique shaders."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if not pattern:
+            raise ValueError("pattern is required")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                stage_filter = Parsers.parse_stage(stage) if stage else None
+                records = self._collect_unique_shaders(
+                    controller, int(max_events), max(int(limit) * 4, 100))
+                target = self._choose_disassembly_target(
+                    controller, disassembly_target)
+
+                lower_pattern = str(pattern).lower()
+                matches = []
+                for record in records:
+                    if len(matches) >= int(limit):
+                        break
+                    if stage_filter is not None and record["stage_enum"] != stage_filter:
+                        continue
+
+                    controller.SetFrameEvent(record["first_event_id"], True)
+                    pipe = controller.GetPipelineState()
+                    try:
+                        reflection = pipe.GetShaderReflection(record["stage_enum"])
+                    except Exception:
+                        reflection = None
+                    if not reflection:
+                        continue
+
+                    try:
+                        pipe_obj = pipe.GetGraphicsPipelineObject()
+                    except Exception:
+                        pipe_obj = rd.ResourceId.Null()
+                    try:
+                        disasm = str(controller.DisassembleShader(
+                            pipe_obj, reflection, target))
+                    except Exception as e:
+                        matches.append({
+                            "resource_id": record["resource_id"],
+                            "stage": record["stage"],
+                            "first_event_id": record["first_event_id"],
+                            "error": "DisassembleShader failed: %s" % str(e),
+                        })
+                        continue
+
+                    lower_disasm = disasm.lower()
+                    if lower_pattern not in lower_disasm:
+                        continue
+
+                    lines = []
+                    for line_no, line in enumerate(disasm.splitlines(), start=1):
+                        if lower_pattern in line.lower():
+                            lines.append({"line": line_no, "text": line})
+                            if len(lines) >= 10:
+                                break
+
+                    match = self._public_shader_record(record)
+                    match.update({
+                        "disassembly_target": str(target),
+                        "matching_lines": lines,
+                    })
+                    matches.append(match)
+
+                result["data"] = {
+                    "pattern": pattern,
+                    "stage": stage,
+                    "count": len(matches),
+                    "matches": matches,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "search_shaders error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def _collect_unique_shaders(self, controller, max_events, max_shaders):
+        """Collect unique shaders and usage counts by scanning draw/dispatch events."""
+        event_ids = []
+        for action in Helpers.flatten_actions(controller.GetRootActions()):
+            flags = getattr(action, "flags", 0)
+            if (
+                bool(flags & rd.ActionFlags.Drawcall)
+                or bool(flags & rd.ActionFlags.Dispatch)
+            ):
+                event_ids.append(int(getattr(action, "eventId", 0)))
+                if len(event_ids) >= max_events:
+                    break
+
+        records = {}
+        for event_id in event_ids:
+            if len(records) >= max_shaders:
+                break
+            controller.SetFrameEvent(event_id, True)
+            pipe = controller.GetPipelineState()
+            for stage_enum in Helpers.get_all_shader_stages():
+                try:
+                    shader = pipe.GetShader(stage_enum)
+                except Exception:
+                    continue
+                if shader == rd.ResourceId.Null():
+                    continue
+
+                key = (self._stage_name(stage_enum), str(shader))
+                if key in records:
+                    records[key]["usage_count"] += 1
+                    continue
+                if len(records) >= max_shaders:
+                    break
+
+                entry = ""
+                try:
+                    entry = pipe.GetShaderEntryPoint(stage_enum)
+                except Exception:
+                    pass
+                name = ""
+                try:
+                    name = self.ctx.GetResourceName(shader)
+                except Exception:
+                    pass
+
+                records[key] = {
+                    "stage_enum": stage_enum,
+                    "stage": self._stage_name(stage_enum),
+                    "resource_id": str(shader),
+                    "id": self._resource_id_int(shader),
+                    "name": name,
+                    "entry_point": entry,
+                    "first_event_id": event_id,
+                    "usage_count": 1,
+                }
+
+        return list(records.values())
+
+    def _public_shader_record(self, record):
+        return {
+            "stage": record["stage"],
+            "resource_id": record["resource_id"],
+            "id": record["id"],
+            "name": record["name"],
+            "entry_point": record["entry_point"],
+            "first_event_id": record["first_event_id"],
+            "usage_count": record["usage_count"],
+        }
+
+    def _choose_disassembly_target(self, controller, target_filter):
+        targets = list(controller.GetDisassemblyTargets(True))
+        if not targets:
+            raise ValueError("No disassembly targets available")
+        if target_filter:
+            needle = str(target_filter).lower()
+            for target in targets:
+                if needle in str(target).lower():
+                    return target
+        return targets[0]
+
+    def _stage_name(self, stage_enum):
+        if stage_enum == rd.ShaderStage.Vertex:
+            return "vertex"
+        if stage_enum == rd.ShaderStage.Hull:
+            return "hull"
+        if stage_enum == rd.ShaderStage.Domain:
+            return "domain"
+        if stage_enum == rd.ShaderStage.Geometry:
+            return "geometry"
+        if stage_enum == rd.ShaderStage.Pixel:
+            return "pixel"
+        if stage_enum == rd.ShaderStage.Compute:
+            return "compute"
+        return str(stage_enum)
+
     def _get_stage_resources(self, controller, pipe, stage, reflection):
         """Get shader resource views (SRVs) for a stage"""
         resources = []

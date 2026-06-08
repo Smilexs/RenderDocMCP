@@ -43,6 +43,19 @@ class RequestHandler:
             "export_mesh_to_file": self._handle_export_mesh_to_file,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
+            "capture_frame": self._handle_capture_frame,
+            "get_resource_info": self._handle_get_resource_info,
+            "get_resource_usage": self._handle_get_resource_usage,
+            "list_cbuffers": self._handle_list_cbuffers,
+            "get_cbuffer_contents": self._handle_get_cbuffer_contents,
+            "list_shaders": self._handle_list_shaders,
+            "search_shaders": self._handle_search_shaders,
+            "list_passes": self._handle_list_passes,
+            "get_pass_info": self._handle_get_pass_info,
+            "get_pass_attachments": self._handle_get_pass_attachments,
+            "get_pass_statistics": self._handle_get_pass_statistics,
+            "get_pass_deps": self._handle_get_pass_deps,
+            "find_unused_targets": self._handle_find_unused_targets,
         }
 
     def handle(self, request):
@@ -219,6 +232,47 @@ class RequestHandler:
         stage = params.get("stage", "pixel")
         return self.facade.get_bound_textures(int(event_id), stage)
 
+    def _handle_list_cbuffers(self, params):
+        """Handle list_cbuffers request"""
+        stage = params.get("stage")
+        if stage is None:
+            raise ValueError("stage is required")
+        event_id = params.get("event_id", params.get("eventId"))
+        return self.facade.list_cbuffers(
+            stage, None if event_id is None else int(event_id))
+
+    def _handle_get_cbuffer_contents(self, params):
+        """Handle get_cbuffer_contents request"""
+        stage = params.get("stage")
+        if stage is None:
+            raise ValueError("stage is required")
+        index = params.get("index")
+        if index is None:
+            raise ValueError("index is required")
+        event_id = params.get("event_id", params.get("eventId"))
+        return self.facade.get_cbuffer_contents(
+            stage, int(index), None if event_id is None else int(event_id))
+
+    def _handle_list_shaders(self, params):
+        """Handle list_shaders request"""
+        return self.facade.list_shaders(
+            int(params.get("max_events", params.get("maxEvents", 10000))),
+            int(params.get("max_shaders", params.get("maxShaders", 200))),
+        )
+
+    def _handle_search_shaders(self, params):
+        """Handle search_shaders request"""
+        pattern = params.get("pattern")
+        if not pattern:
+            raise ValueError("pattern is required")
+        return self.facade.search_shaders(
+            pattern,
+            params.get("stage"),
+            int(params.get("limit", 50)),
+            int(params.get("max_events", params.get("maxEvents", 10000))),
+            params.get("disassembly_target", params.get("disassemblyTarget")),
+        )
+
     def _handle_get_buffer_contents(self, params):
         """Handle get_buffer_contents request"""
         resource_id = params.get("resource_id")
@@ -228,6 +282,20 @@ class RequestHandler:
         length = params.get("length", 0)
         event_id = params.get("event_id")
         return self.facade.get_buffer_contents(resource_id, offset, length, event_id)
+
+    def _handle_get_resource_info(self, params):
+        """Handle get_resource_info request"""
+        resource_id = params.get("resource_id", params.get("resourceId"))
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        return self.facade.get_resource_info(resource_id)
+
+    def _handle_get_resource_usage(self, params):
+        """Handle get_resource_usage request"""
+        resource_id = params.get("resource_id", params.get("resourceId"))
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        return self.facade.get_resource_usage(resource_id)
 
     def _handle_get_textures(self, params):
         """Handle get_textures request"""
@@ -373,3 +441,47 @@ class RequestHandler:
         if capture_path is None:
             raise ValueError("capture_path is required")
         return self.facade.open_capture(capture_path)
+
+    def _handle_capture_frame(self, params):
+        """Handle capture_frame request"""
+        exe_path = params.get("exe_path", params.get("exePath"))
+        if not exe_path:
+            raise ValueError("exe_path is required")
+        return self.facade.capture_frame(
+            exe_path,
+            params.get("working_dir", params.get("workingDir", "")),
+            params.get("cmd_line", params.get("cmdLine", "")),
+            int(params.get("delay_frames", params.get("delayFrames", 100))),
+            params.get("output_path", params.get("outputPath", "")),
+            int(params.get("timeout_seconds", params.get("timeoutSeconds", 60))),
+        )
+
+    def _handle_list_passes(self, params):
+        """Handle list_passes request"""
+        return self.facade.list_passes()
+
+    def _handle_get_pass_info(self, params):
+        """Handle get_pass_info request"""
+        event_id = params.get("event_id", params.get("eventId"))
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.get_pass_info(int(event_id))
+
+    def _handle_get_pass_attachments(self, params):
+        """Handle get_pass_attachments request"""
+        event_id = params.get("event_id", params.get("eventId"))
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.get_pass_attachments(int(event_id))
+
+    def _handle_get_pass_statistics(self, params):
+        """Handle get_pass_statistics request"""
+        return self.facade.get_pass_statistics()
+
+    def _handle_get_pass_deps(self, params):
+        """Handle get_pass_deps request"""
+        return self.facade.get_pass_deps()
+
+    def _handle_find_unused_targets(self, params):
+        """Handle find_unused_targets request"""
+        return self.facade.find_unused_targets()

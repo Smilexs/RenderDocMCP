@@ -11,6 +11,7 @@ from .services import (
     ResourceService,
     PipelineService,
     MeshService,
+    PassService,
 )
 
 
@@ -42,6 +43,7 @@ class RenderDocFacade:
         self._resource = ResourceService(ctx, self._invoke)
         self._pipeline = PipelineService(ctx, self._invoke)
         self._mesh = MeshService(ctx, self._invoke)
+        self._pass = PassService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -60,6 +62,14 @@ class RenderDocFacade:
     def open_capture(self, capture_path):
         """Open a capture file in RenderDoc"""
         return self._capture.open_capture(capture_path)
+
+    def capture_frame(self, exe_path, working_dir="", cmd_line="",
+                      delay_frames=100, output_path="", timeout_seconds=60):
+        """Launch a target app through RenderDoc, capture one frame, and open it"""
+        return self._capture.capture_frame(
+            exe_path, working_dir, cmd_line, delay_frames,
+            output_path, timeout_seconds,
+        )
 
     # ==================== Draw Call / Action Operations ====================
 
@@ -147,6 +157,14 @@ class RenderDocFacade:
         """Get buffer data"""
         return self._resource.get_buffer_contents(resource_id, offset, length, event_id)
 
+    def get_resource_info(self, resource_id):
+        """Get detailed metadata for any RenderDoc resource"""
+        return self._resource.get_resource_info(resource_id)
+
+    def get_resource_usage(self, resource_id):
+        """Get a resource's frame usage history"""
+        return self._resource.get_resource_usage(resource_id)
+
     def get_textures(self):
         """List texture resources"""
         return self._resource.get_textures()
@@ -199,6 +217,51 @@ class RenderDocFacade:
     def get_bound_textures(self, event_id, stage="pixel"):
         """Get shader-stage texture bindings with role inference"""
         return self._pipeline.get_bound_textures(event_id, stage)
+
+    def list_cbuffers(self, stage, event_id=None):
+        """List constant buffers bound to a shader stage"""
+        return self._pipeline.list_cbuffers(stage, event_id)
+
+    def get_cbuffer_contents(self, stage, index, event_id=None):
+        """Read variables from one constant buffer by stage and index"""
+        return self._pipeline.get_cbuffer_contents(stage, index, event_id)
+
+    def list_shaders(self, max_events=10000, max_shaders=200):
+        """List unique shaders used across draw/dispatch events"""
+        return self._pipeline.list_shaders(max_events, max_shaders)
+
+    def search_shaders(self, pattern, stage=None, limit=50,
+                       max_events=10000, disassembly_target=None):
+        """Search shader disassembly text across unique shaders"""
+        return self._pipeline.search_shaders(
+            pattern, stage, limit, max_events, disassembly_target,
+        )
+
+    # ==================== Pass / Frame Structure Operations ====================
+
+    def list_passes(self):
+        """List marker-based and synthetic render pass ranges"""
+        return self._pass.list_passes()
+
+    def get_pass_info(self, event_id):
+        """Get details for the pass containing an event"""
+        return self._pass.get_pass_info(event_id)
+
+    def get_pass_attachments(self, event_id):
+        """Get color/depth attachments for a pass"""
+        return self._pass.get_pass_attachments(event_id)
+
+    def get_pass_statistics(self):
+        """Get per-pass aggregate statistics"""
+        return self._pass.get_pass_statistics()
+
+    def get_pass_deps(self):
+        """Build inter-pass resource dependencies"""
+        return self._pass.get_pass_deps()
+
+    def find_unused_targets(self):
+        """Find written targets not contributing to visible output"""
+        return self._pass.find_unused_targets()
 
     # ==================== Mesh Operations ====================
 

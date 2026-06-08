@@ -47,6 +47,36 @@ class ResourceService:
             pass
         return lookup
 
+    def _resource_type_lookup(self, controller):
+        """Build {numeric_resource_id: resource type string}."""
+        lookup = {}
+        try:
+            for res in controller.GetResources():
+                rid = self._resource_id_int(res.resourceId)
+                lookup[rid] = str(getattr(res, "type", "resource"))
+        except Exception:
+            pass
+        return lookup
+
+    def _find_buffer_by_id(self, controller, resource_id):
+        """Find buffer by resource ID."""
+        target_id = Parsers.extract_numeric_id(resource_id)
+        for buf in controller.GetBuffers():
+            if self._resource_id_int(buf.resourceId) == target_id:
+                return buf
+        return None
+
+    def _find_resource_desc_by_id(self, controller, resource_id):
+        """Find ResourceDescription by resource ID."""
+        target_id = Parsers.extract_numeric_id(resource_id)
+        try:
+            for res in controller.GetResources():
+                if self._resource_id_int(res.resourceId) == target_id:
+                    return res
+        except Exception:
+            pass
+        return None
+
     def _format_name(self, fmt):
         """Return a readable RenderDoc ResourceFormat name."""
         try:
@@ -262,6 +292,155 @@ class ResourceService:
         if result["error"]:
             raise ValueError(result["error"])
         return result["resources"]
+
+    def get_resource_info(self, resource_id):
+        """Get detailed metadata for a texture, buffer, or generic resource."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                rid_obj = Parsers.parse_resource_id(resource_id)
+                rid_int = self._resource_id_int(rid_obj)
+                res_desc = self._find_resource_desc_by_id(controller, resource_id)
+                tex_desc = self._find_texture_by_id(controller, resource_id)
+                buf_desc = self._find_buffer_by_id(controller, resource_id)
+
+                if res_desc is None and tex_desc is None and buf_desc is None:
+                    result["error"] = "Resource not found: %s" % resource_id
+                    return
+
+                data = {
+                    "resource_id": str(getattr(res_desc, "resourceId", rid_obj)),
+                    "id": rid_int,
+                    "name": getattr(res_desc, "name", ""),
+                    "type": str(getattr(res_desc, "type", "resource")),
+                }
+
+                if tex_desc is not None:
+                    data.update({
+                        "type": "texture" if "Swapchain" not in data["type"] else data["type"],
+                        "width": getattr(tex_desc, "width", 0),
+                        "height": getattr(tex_desc, "height", 0),
+                        "depth": getattr(tex_desc, "depth", 0),
+                        "array_size": getattr(tex_desc, "arraysize", 0),
+                        "mip_levels": getattr(tex_desc, "mips", 0),
+                        "format": self._format_name(getattr(tex_desc, "format", "")),
+                        "dimension": str(getattr(tex_desc, "type", "")),
+                        "msaa_samples": getattr(tex_desc, "msSamp", 0),
+                        "byte_size": getattr(tex_desc, "byteSize", 0),
+                        "cubemap": bool(getattr(tex_desc, "cubemap", False)),
+                    })
+                    fmt = getattr(tex_desc, "format", None)
+                    if fmt is not None:
+                        bgra_order = getattr(fmt, "BGRAOrder", False)
+                        if callable(bgra_order):
+                            bgra_order = bgra_order()
+                        data["format_details"] = {
+                            "name": self._format_name(fmt),
+                            "component_count": getattr(fmt, "compCount", 0),
+                            "component_byte_width": getattr(fmt, "compByteWidth", 0),
+                            "component_type": str(getattr(fmt, "compType", "")),
+                            "bgra_order": bool(bgra_order),
+                        }
+
+                if buf_desc is not None:
+                    data.update({
+                        "type": "buffer",
+                        "length": getattr(buf_desc, "length", 0),
+                        "byte_stride": getattr(buf_desc, "byteStride", 0),
+                        "structure_byte_stride": getattr(buf_desc, "structureByteStride", 0),
+                        "creation_flags": str(getattr(buf_desc, "creationFlags", "")),
+                    })
+                    try:
+                        data["gpu_address"] = getattr(buf_desc, "gpuAddress", 0)
+                    except Exception:
+                        pass
+
+                result["data"] = data
+            except Exception as e:
+                import traceback
+                result["error"] = "get_resource_info error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def get_resource_usage(self, resource_id):
+        """Get frame usage history for one resource."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                rid = Parsers.parse_resource_id(resource_id)
+                structured_file = controller.GetStructuredFile()
+                action_names = {}
+
+                def collect(actions):
+                    for action in actions:
+                        try:
+                            action_names[int(action.eventId)] = action.GetName(structured_file)
+                        except Exception:
+                            pass
+                        try:
+                            collect(action.children)
+                        except Exception:
+                            pass
+
+                collect(controller.GetRootActions())
+
+                entries = []
+                for usage in controller.GetUsage(rid):
+                    event_id = int(getattr(usage, "eventId", getattr(usage, "eventID", 0)))
+                    usage_name = str(getattr(usage, "usage", ""))
+                    entries.append({
+                        "event_id": event_id,
+                        "name": action_names.get(event_id, ""),
+                        "usage": usage_name,
+                        "access": self._usage_access(usage_name),
+                    })
+
+                result["data"] = {
+                    "resource_id": resource_id,
+                    "count": len(entries),
+                    "usages": entries,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "get_resource_usage error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def _usage_access(self, usage_name):
+        """Classify a RenderDoc ResourceUsage string as read/write/other."""
+        write_hints = (
+            "ColorTarget", "DepthStencilTarget", "CopyDst", "Clear",
+            "GenMips", "ResolveDst", "RWResource", "CPUWrite",
+        )
+        read_hints = (
+            "VertexBuffer", "IndexBuffer", "Constants", "Resource",
+            "InputTarget", "CopySrc", "ResolveSrc", "Indirect",
+        )
+        is_write = any(hint in usage_name for hint in write_hints)
+        is_read = any(hint in usage_name for hint in read_hints) or "RWResource" in usage_name
+        if is_read and is_write:
+            return "read_write"
+        if is_write:
+            return "write"
+        if is_read:
+            return "read"
+        return "other"
 
     def get_buffer_contents(self, resource_id, offset=0, length=0, event_id=None):
         """Get buffer data. Optionally set frame event first for transient buffers."""

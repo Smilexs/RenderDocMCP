@@ -38,7 +38,8 @@ RenderDocMCP/
 │   │   ├── search_service.py          # Shader/Texture/Resource 反向搜索
 │   │   ├── resource_service.py        # Buffer/Texture 数据读取
 │   │   ├── pipeline_service.py        # Shader 与 Pipeline State
-│   │   └── mesh_service.py            # Mesh 顶点/索引解码
+│   │   ├── mesh_service.py            # Mesh 顶点/索引解码
+│   │   └── pass_service.py            # Pass / Frame 结构分析
 │   └── utils/                         # 解析、序列化、辅助函数
 │
 ├── docs/                              # 文档资源
@@ -59,6 +60,12 @@ RenderDocMCP/
 | `get_capture_status` | 检查捕获文件的加载状态 |
 | `get_frame_summary` | 获取当前帧的统计信息（API、Draw 数、Marker 列表等） |
 | `get_draw_calls` | 以层级结构获取绘制调用列表 |
+| `list_passes` | 列出 marker 或按 RT 变化推断出的 Render Pass 区间 |
+| `get_pass_info` | 获取某个 event 所在 Pass 的 draw/dispatch 列表与统计 |
+| `get_pass_attachments` | 获取某个 Pass 的 color/depth attachments |
+| `get_pass_statistics` | 获取每个 Pass 的 draw/dispatch/triangle/RT 尺寸统计 |
+| `get_pass_deps` | 构建 Pass 之间的资源读写依赖图 |
+| `find_unused_targets` | 查找写入后未贡献到最终输出的渲染目标/资源 |
 | `get_draw_call_details` | 获取指定绘制调用的详细信息 |
 | `get_action_timings` | 获取 GPU 计时（按 event_id / marker 过滤） |
 | `enumerate_counters` | 列出当前捕获可用的 GPU performance counters |
@@ -71,18 +78,28 @@ RenderDocMCP/
 | `find_draws_by_resource` | 按 Resource ID 精确查找使用该资源的 Draw |
 | `get_shader_info` | 获取着色器源代码和常量缓冲区的值 |
 | `get_bound_textures` | 获取指定 event/stage 绑定的纹理，并推断 albedo/normal/roughness 等用途 |
+| `list_cbuffers` | 列出指定 shader stage 绑定的常量缓冲区 |
+| `get_cbuffer_contents` | 读取指定常量缓冲区的变量名、类型和值 |
+| `list_shaders` | 扫描整帧 draw/dispatch，列出唯一 Shader 及使用次数 |
+| `search_shaders` | 在全局 Shader 反汇编文本中搜索关键字 |
 | `get_buffer_contents` | 获取缓冲区内容 (Base64)，可选 `event_id` 读取瞬态缓冲 |
 | `get_textures` | 列出当前捕获中的所有纹理资源 |
 | `get_buffers` | 列出当前捕获中的所有 buffer 资源 |
 | `get_resources` | 列出当前捕获中的所有 RenderDoc resources |
+| `get_resource_info` | 获取任意 Resource 的详细元数据（texture/buffer/resource） |
+| `get_resource_usage` | 获取 Resource 在整帧中的使用历史与读写分类 |
 | `get_texture_info` | 获取纹理元数据 |
-| `get_texture_data` | 获取纹理像素数据 (Base64) |
+| `get_texture_data` | 获取纹理像素数据 (Base64)，仅适合小贴图 |
 | `pick_pixel` | 读取指定纹理/RT 的单个像素 RGBA 值 |
 | `pixel_history` | 获取指定 RT 像素在整帧中的修改历史 |
+| `export_texture_to_file` | 将纹理写入图片文件，大贴图首选 |
 | `get_pipeline_state` | 获取管线状态（含 IA 布局、VB/IB 绑定） |
 | `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析） |
+| `get_world_matrix` | 从 VS cb0 读取 Unity ObjectToWorld / WorldToObject 矩阵 |
+| `export_mesh_to_file` | 将 Draw 的顶点/索引数据写入 JSON 文件，可烘焙到世界空间 |
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
+| `capture_frame` | 通过 RenderDoc 启动目标程序，等待若干帧后抓取一帧并自动打开 |
 | `launch_renderdoc` | 启动 qrenderdoc 并打开 .rdc，等待 MCP Bridge ready |
 
 ### get_draw_calls 过滤选项
@@ -109,6 +126,15 @@ list_captures(directory="D:\\captures")
 # 打开捕获文件（已有捕获会自动关闭）
 open_capture(capture_path="D:\\captures\\game.rdc")
 # → {"success": true, "filename": "game.rdc", "api": "D3D11"}
+
+# 启动目标程序，等待若干帧后抓一帧并自动打开
+capture_frame(
+    exe_path="D:\\Game\\Game.exe",
+    working_dir="D:\\Game",
+    cmd_line="-windowed",
+    delay_frames=100,
+    output_path="D:\\captures\\game_auto.rdc",
+    timeout_seconds=60)
 ```
 
 ### 反向搜索工具
@@ -144,6 +170,11 @@ get_action_timings(marker_filter="Camera.Render", exclude_markers=["GUI.Repaint"
 ### 资源与几何数据
 
 ```python
+# 资源列表、详情、使用历史
+get_resources()
+get_resource_info(resource_id="ResourceId::123")
+get_resource_usage(resource_id="ResourceId::123")
+
 # 读取缓冲区的一部分
 get_buffer_contents(resource_id="ResourceId::123", offset=256, length=512)
 
@@ -155,6 +186,29 @@ get_texture_data(resource_id="ResourceId::123", mip=0, slice=0)
 
 # 提取 Draw 的 IB + 解码后的顶点属性
 get_mesh_data(event_id=123)
+```
+
+### CBuffer / Shader 全局检索
+
+```python
+# stage 支持 vs/hs/ds/gs/ps/cs，也支持 vertex/pixel/compute 等全名
+list_cbuffers(stage="ps", event_id=123)
+get_cbuffer_contents(stage="ps", index=0, event_id=123)
+
+# 全帧唯一 Shader 索引和反汇编搜索
+list_shaders(max_events=10000, max_shaders=200)
+search_shaders(pattern="_BaseColor", stage="ps", limit=20, disassembly_target="HLSL")
+```
+
+### Pass / Frame 结构分析
+
+```python
+list_passes()
+get_pass_info(event_id=123)
+get_pass_attachments(event_id=123)
+get_pass_statistics()
+get_pass_deps()
+find_unused_targets()
 ```
 
 ## 通信协议
@@ -174,6 +228,7 @@ get_mesh_data(event_id=123)
 - 访问 `ReplayController` 必须通过 `BlockInvoke`，确保操作运行在 RenderDoc replay 线程。
 - `renderdoc_facade.py` 只做分发，具体逻辑放在 `renderdoc_extension/services/` 中。
 - 新增 MCP 工具时，需要同时更新 `mcp_server/server.py`、`renderdoc_extension/request_handler.py`、`renderdoc_extension/renderdoc_facade.py` 和对应 service。
+- 新增工具后同步更新 `README.md` 与本文件的工具表和示例，避免客户端侧说明落后于 schema。
 
 ## 维护 / 扩展开发（改动本仓库源码时必读）
 
@@ -213,6 +268,8 @@ RenderDoc 在启动时把扩展模块 import 进内存；**只拷贝文件 / 改
 - **大二进制别走 inline**：纹理用 `export_texture_to_file`、大模型用 `export_mesh_to_file`，
   宿主侧落盘只回传元信息。`get_texture_data` / `get_mesh_data` 的 base64 会经过对话上下文，
   1024² 贴图或大网格单次即溢出窗口（`get_mesh_data` 会 `Expecting ',' delimiter` 截断报错）。
+- **`capture_frame` 前提**：需要 qrenderdoc 已加载 MCP Bridge，并依赖当前 RenderDoc Python 绑定暴露
+  `ExecuteAndInject` / `CreateTargetControl` 或对应 `RENDERDOC_*` 接口；若绑定不暴露这些入口，该工具会直接返回不可用错误。
 
 ### 已修复记录
 
@@ -220,6 +277,8 @@ RenderDoc 在启动时把扩展模块 import 进内存；**只拷贝文件 / 改
   **完整数值**（含嵌套 `_hlslcc_mtx4x4...` 矩阵的逐行 `members`）。修复点：`pipeline_service.py` 用
   `pipe.GetConstantBlock(stage, i, 0)` 返回 `UsedDescriptor`（取代不存在的 `GetConstantBuffer`），
   入口点用 `pipe.GetShaderEntryPoint(stage)`。
+- **Pass/CBuffer/Shader/Resource/Capture 扩展（2026-06）**：同步移植了 Pass 结构分析、独立 CBuffer 读取、
+  Shader 全局索引与搜索、Resource 详情/使用历史，以及 `capture_frame` 实时启动抓帧接口。
 
 ## 参考链接
 

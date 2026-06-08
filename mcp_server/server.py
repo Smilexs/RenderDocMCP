@@ -103,6 +103,71 @@ def get_frame_summary() -> dict:
 
 
 @mcp.tool
+def list_passes() -> dict:
+    """
+    List marker-based and synthetic render pass ranges in the current frame.
+
+    Returns pass names, event ranges, first draw/dispatch events, and whether
+    each pass was inferred from render-target changes.
+    """
+    return bridge.call("list_passes")
+
+
+@mcp.tool
+def get_pass_info(event_id: int) -> dict:
+    """
+    Get the render pass containing a given event.
+
+    Args:
+        event_id: Any event ID inside the pass
+
+    Returns pass range metadata plus draw/dispatch actions in that pass.
+    """
+    return bridge.call("get_pass_info", {"event_id": event_id})
+
+
+@mcp.tool
+def get_pass_attachments(event_id: int) -> dict:
+    """
+    Get color and depth attachments for the pass containing an event.
+
+    Args:
+        event_id: Any event ID inside the pass
+    """
+    return bridge.call("get_pass_attachments", {"event_id": event_id})
+
+
+@mcp.tool
+def get_pass_statistics() -> dict:
+    """
+    Get aggregate statistics for each render pass.
+
+    Returns draw/dispatch counts, approximate triangle totals, and attachment
+    counts/dimensions where available.
+    """
+    return bridge.call("get_pass_statistics")
+
+
+@mcp.tool
+def get_pass_deps() -> dict:
+    """
+    Build an inter-pass resource dependency graph.
+
+    Returns edges where a resource written in one pass is read by a later pass.
+    """
+    return bridge.call("get_pass_deps", timeout=90.0)
+
+
+@mcp.tool
+def find_unused_targets() -> dict:
+    """
+    Find render targets/resources written during the frame but not consumed by
+    the final visible output according to usage-history heuristics.
+    """
+    return bridge.call("find_unused_targets", timeout=90.0)
+
+
+@mcp.tool
 def find_draws_by_shader(
     shader_name: str,
     stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "compute"] | None = None,
@@ -370,6 +435,90 @@ def get_bound_textures(
 
 
 @mcp.tool
+def list_cbuffers(
+    stage: Literal["vs", "hs", "ds", "gs", "ps", "cs", "vertex", "hull", "domain", "geometry", "pixel", "compute"],
+    event_id: int | None = None,
+) -> dict:
+    """
+    List constant buffers bound to a shader stage.
+
+    Args:
+        stage: Shader stage ("vs"/"ps" aliases and full names are accepted)
+        event_id: Optional event to inspect. If omitted, uses RenderDoc's current event.
+    """
+    params: dict[str, object] = {"stage": stage}
+    if event_id is not None:
+        params["event_id"] = event_id
+    return bridge.call("list_cbuffers", params)
+
+
+@mcp.tool
+def get_cbuffer_contents(
+    stage: Literal["vs", "hs", "ds", "gs", "ps", "cs", "vertex", "hull", "domain", "geometry", "pixel", "compute"],
+    index: int,
+    event_id: int | None = None,
+) -> dict:
+    """
+    Read all variables from one constant buffer.
+
+    Args:
+        stage: Shader stage ("vs"/"ps" aliases and full names are accepted)
+        index: Constant buffer index from list_cbuffers
+        event_id: Optional event to inspect. If omitted, uses RenderDoc's current event.
+    """
+    params: dict[str, object] = {"stage": stage, "index": index}
+    if event_id is not None:
+        params["event_id"] = event_id
+    return bridge.call("get_cbuffer_contents", params)
+
+
+@mcp.tool
+def list_shaders(max_events: int = 10000, max_shaders: int = 200) -> dict:
+    """
+    List unique shaders used by draw/dispatch events in the capture.
+
+    Args:
+        max_events: Maximum draw/dispatch events to scan
+        max_shaders: Maximum unique shaders to return
+    """
+    return bridge.call(
+        "list_shaders",
+        {"max_events": max_events, "max_shaders": max_shaders},
+        timeout=60.0,
+    )
+
+
+@mcp.tool
+def search_shaders(
+    pattern: str,
+    stage: Literal["vs", "hs", "ds", "gs", "ps", "cs", "vertex", "hull", "domain", "geometry", "pixel", "compute"] | None = None,
+    limit: int = 50,
+    max_events: int = 10000,
+    disassembly_target: str | None = None,
+) -> dict:
+    """
+    Search shader disassembly text across unique shaders.
+
+    Args:
+        pattern: Case-insensitive text to search for
+        stage: Optional shader stage filter
+        limit: Maximum matching shaders to return
+        max_events: Maximum draw/dispatch events to scan
+        disassembly_target: Optional disassembly target substring, e.g. "HLSL"
+    """
+    params: dict[str, object] = {
+        "pattern": pattern,
+        "limit": limit,
+        "max_events": max_events,
+    }
+    if stage is not None:
+        params["stage"] = stage
+    if disassembly_target is not None:
+        params["disassembly_target"] = disassembly_target
+    return bridge.call("search_shaders", params, timeout=90.0)
+
+
+@mcp.tool
 def get_buffer_contents(
     resource_id: str,
     offset: int = 0,
@@ -427,6 +576,32 @@ def get_resources() -> dict:
     buffer, or resource).
     """
     return bridge.call("get_resources")
+
+
+@mcp.tool
+def get_resource_info(resource_id: str) -> dict:
+    """
+    Get detailed metadata for any RenderDoc resource.
+
+    Args:
+        resource_id: Resource ID from get_resources/get_textures/get_buffers
+
+    Returns type-specific metadata for textures and buffers when available.
+    """
+    return bridge.call("get_resource_info", {"resource_id": resource_id})
+
+
+@mcp.tool
+def get_resource_usage(resource_id: str) -> dict:
+    """
+    Get frame usage history for one RenderDoc resource.
+
+    Args:
+        resource_id: Resource ID from get_resources/get_textures/get_buffers
+
+    Returns usage events with action names and read/write classification.
+    """
+    return bridge.call("get_resource_usage", {"resource_id": resource_id})
 
 
 @mcp.tool
@@ -762,6 +937,39 @@ def open_capture(capture_path: str) -> dict:
     Note: This will close any currently open capture.
     """
     return bridge.call("open_capture", {"capture_path": capture_path})
+
+
+@mcp.tool
+def capture_frame(
+    exe_path: str,
+    working_dir: str = "",
+    cmd_line: str = "",
+    delay_frames: int = 100,
+    output_path: str = "",
+    timeout_seconds: int = 60,
+) -> dict:
+    """
+    Launch an application through RenderDoc, capture one frame, then open it.
+
+    Args:
+        exe_path: Absolute path to the executable to launch
+        working_dir: Optional working directory; defaults to the executable folder
+        cmd_line: Optional command-line arguments for the target process
+        delay_frames: Approximate number of frames to wait before triggering capture
+        output_path: Optional .rdc path to write; defaults to a temp capture path
+        timeout_seconds: Seconds to wait for target control and capture completion
+
+    The RenderDoc MCP bridge must already be loaded in qrenderdoc for this tool.
+    """
+    params: dict[str, object] = {
+        "exe_path": exe_path,
+        "working_dir": working_dir,
+        "cmd_line": cmd_line,
+        "delay_frames": delay_frames,
+        "output_path": output_path,
+        "timeout_seconds": timeout_seconds,
+    }
+    return bridge.call("capture_frame", params, timeout=float(timeout_seconds) + 120.0)
 
 
 @mcp.tool

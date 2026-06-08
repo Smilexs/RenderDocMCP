@@ -12,12 +12,18 @@ class Parsers:
     def parse_stage(stage_str):
         """Convert stage string to ShaderStage enum"""
         stage_map = {
+            "vs": rd.ShaderStage.Vertex,
             "vertex": rd.ShaderStage.Vertex,
+            "hs": rd.ShaderStage.Hull,
             "hull": rd.ShaderStage.Hull,
+            "ds": rd.ShaderStage.Domain,
             "domain": rd.ShaderStage.Domain,
+            "gs": rd.ShaderStage.Geometry,
             "geometry": rd.ShaderStage.Geometry,
+            "ps": rd.ShaderStage.Pixel,
             "pixel": rd.ShaderStage.Pixel,
             "fragment": rd.ShaderStage.Pixel,
+            "cs": rd.ShaderStage.Compute,
             "compute": rd.ShaderStage.Compute,
         }
         stage_lower = stage_str.lower()
