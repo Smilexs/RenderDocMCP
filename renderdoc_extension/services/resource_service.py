@@ -57,6 +57,88 @@ class ResourceService:
             except Exception:
                 return str(fmt)
 
+    def _make_subresource(self, mip=0, slice=0, sample=0):
+        """Create a RenderDoc Subresource compatibly across API versions."""
+        try:
+            return rd.Subresource(int(mip), int(slice), int(sample))
+        except TypeError:
+            pass
+        sub = rd.Subresource()
+        sub.mip = int(mip)
+        sub.slice = int(slice)
+        sub.sample = int(sample)
+        return sub
+
+    def _pixel_value_dict(self, value):
+        """Serialize RenderDoc PixelValue-like objects."""
+        data = {}
+        for attr, key in (
+            ("floatValue", "float"),
+            ("uintValue", "uint"),
+            ("sintValue", "sint"),
+            ("unormValue", "unorm"),
+            ("snormValue", "snorm"),
+        ):
+            try:
+                channel_values = list(getattr(value, attr)[:4])
+                data[key] = {
+                    "r": channel_values[0],
+                    "g": channel_values[1],
+                    "b": channel_values[2],
+                    "a": channel_values[3],
+                }
+            except Exception:
+                pass
+        if not data:
+            data["raw"] = str(value)
+        return data
+
+    def _save_texture_result_ok(self, save_result):
+        """Normalize RenderDoc SaveTexture return shapes."""
+        if isinstance(save_result, bool):
+            return save_result
+        try:
+            return save_result.code == rd.ResultCode.Succeeded
+        except Exception:
+            return bool(save_result)
+
+    def _apply_texture_save_subresource(self, texsave, mip=0, slice=0, sample=0):
+        """Set mip/slice/sample on TextureSave across RenderDoc versions."""
+        try:
+            texsave.mip = int(mip)
+        except Exception:
+            pass
+        try:
+            texsave.slice = self._make_subresource(mip, slice, sample)
+        except Exception:
+            try:
+                texsave.slice.sliceIndex = int(slice)
+            except Exception:
+                pass
+        try:
+            texsave.sample.sampleIndex = int(sample)
+        except Exception:
+            pass
+
+    def _build_texture_save(self, tex_desc, dest_type, alpha_enum,
+                            mip=0, slice=0, sample=0):
+        """Create a configured TextureSave object."""
+        texsave = rd.TextureSave()
+        texsave.resourceId = tex_desc.resourceId
+        texsave.destType = dest_type
+        texsave.alpha = alpha_enum
+        self._apply_texture_save_subresource(texsave, mip, slice, sample)
+
+        # Typeless formats (e.g. R16_TYPELESS depth/shadow) need an explicit
+        # typecast so SaveTexture can interpret the bits.
+        try:
+            fmt_name = str(tex_desc.format.Name())
+            if "TYPELESS" in fmt_name.upper():
+                texsave.typeCast = rd.CompType.UNorm
+        except Exception:
+            pass
+        return texsave
+
     def get_textures(self):
         """List all texture resources alive in the current capture."""
         if not self.ctx.IsCaptureLoaded():
@@ -244,6 +326,112 @@ class ResourceService:
             raise ValueError(result["error"])
         return result["data"]
 
+    def pick_pixel(self, resource_id, x, y, mip=0, slice=0, sample=0):
+        """Read one pixel value from a texture or render target."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                tex_desc = self._find_texture_by_id(controller, resource_id)
+                if not tex_desc:
+                    result["error"] = "Texture not found: %s" % resource_id
+                    return
+
+                sub = self._make_subresource(mip, slice, sample)
+                comp_type = getattr(rd.CompType, "Typeless", rd.CompType.Float)
+                value = controller.PickPixel(
+                    tex_desc.resourceId, int(x), int(y), sub, comp_type)
+
+                result["data"] = {
+                    "resource_id": resource_id,
+                    "x": int(x),
+                    "y": int(y),
+                    "mip": int(mip),
+                    "slice": int(slice),
+                    "sample": int(sample),
+                    "format": self._format_name(tex_desc.format),
+                    "value": self._pixel_value_dict(value),
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "pick_pixel error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def pixel_history(self, resource_id, x, y, mip=0, slice=0, sample=0):
+        """Get the modification history for one pixel across the frame."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                tex_desc = self._find_texture_by_id(controller, resource_id)
+                if not tex_desc:
+                    result["error"] = "Texture not found: %s" % resource_id
+                    return
+
+                sub = self._make_subresource(mip, slice, sample)
+                comp_type = getattr(rd.CompType, "Typeless", rd.CompType.Float)
+                modifications = controller.PixelHistory(
+                    tex_desc.resourceId, int(x), int(y), sub, comp_type)
+
+                history = []
+                for mod in modifications:
+                    entry = {
+                        "event_id": getattr(mod, "eventId", 0),
+                    }
+                    for attr, key in (
+                        ("preMod", "pre"),
+                        ("postMod", "post"),
+                        ("shaderOut", "shader_out"),
+                    ):
+                        try:
+                            value = getattr(mod, attr)
+                            if value:
+                                col = getattr(value, "col", value)
+                                entry[key] = self._pixel_value_dict(col)
+                        except Exception:
+                            pass
+                    try:
+                        entry["primitive_id"] = getattr(mod, "primitiveID")
+                    except Exception:
+                        pass
+                    try:
+                        entry["passed"] = bool(getattr(mod, "passed"))
+                    except Exception:
+                        pass
+                    history.append(entry)
+
+                result["data"] = {
+                    "resource_id": resource_id,
+                    "x": int(x),
+                    "y": int(y),
+                    "mip": int(mip),
+                    "slice": int(slice),
+                    "sample": int(sample),
+                    "format": self._format_name(tex_desc.format),
+                    "count": len(history),
+                    "history": history,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "pixel_history error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
     def export_texture_to_file(self, resource_id, output_path, file_type="PNG",
                                mip=0, slice=0, sample=0, alpha="Preserve",
                                event_id=None):
@@ -310,23 +498,6 @@ class ResourceService:
                         result["error"] = "Invalid mip %d (texture has %d mips)" % (use_mip, tex_desc.mips)
                         return
 
-                texsave = rd.TextureSave()
-                texsave.resourceId = tex_desc.resourceId
-                texsave.destType = ft_map[ft_name]
-                texsave.alpha = alpha_enum
-                texsave.mip = use_mip
-                texsave.slice.sliceIndex = slice
-                texsave.sample.sampleIndex = sample
-
-                # Typeless formats (e.g. R16_TYPELESS depth/shadow) need an explicit
-                # typecast so SaveTexture can interpret the bits.
-                try:
-                    fmt_name = str(tex_desc.format.Name())
-                    if "TYPELESS" in fmt_name.upper():
-                        texsave.typeCast = rd.CompType.UNorm
-                except Exception:
-                    pass
-
                 # Ensure destination directory exists on the host
                 try:
                     import os as _os
@@ -336,9 +507,97 @@ class ResourceService:
                 except Exception:
                     pass
 
-                ok = controller.SaveTexture(texsave, output_path)
-                if not ok:
-                    result["error"] = "SaveTexture returned False for %s -> %s" % (resource_id, output_path)
+                is_cubemap = bool(getattr(tex_desc, "cubemap", False)) or getattr(tex_desc, "arraysize", 0) == 6
+                face_names = ["posX", "negX", "posY", "negY", "posZ", "negZ"]
+                face_labels = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+
+                if is_cubemap and int(slice) == -1:
+                    if ft_name == "DDS":
+                        texsave = self._build_texture_save(
+                            tex_desc, ft_map[ft_name], alpha_enum, use_mip, 0, sample)
+                        save_result = controller.SaveTexture(texsave, output_path)
+                        if not self._save_texture_result_ok(save_result):
+                            result["error"] = "SaveTexture failed for cubemap %s -> %s: %s" % (
+                                resource_id, output_path, str(save_result))
+                            return
+                        result["data"] = {
+                            "resource_id": resource_id,
+                            "output_path": output_path,
+                            "file_type": ft_name,
+                            "width": tex_desc.width,
+                            "height": tex_desc.height,
+                            "mip": use_mip,
+                            "slice": slice,
+                            "sample": sample,
+                            "format": self._format_name(tex_desc.format),
+                            "mip_levels": tex_desc.mips,
+                            "cubemap": True,
+                            "faces": 6,
+                            "mode": "cubemap_dds",
+                        }
+                        return
+
+                    import os as _os
+                    base, ext = _os.path.splitext(output_path)
+                    saved_faces = []
+                    errors = []
+                    for face_idx in range(6):
+                        face_path = "%s_face%d_%s%s" % (
+                            base, face_idx, face_names[face_idx], ext)
+                        texsave = self._build_texture_save(
+                            tex_desc, ft_map[ft_name], alpha_enum,
+                            use_mip, face_idx, sample)
+                        save_result = controller.SaveTexture(texsave, face_path)
+                        if self._save_texture_result_ok(save_result):
+                            saved_faces.append({
+                                "path": face_path,
+                                "face": face_idx,
+                                "name": face_names[face_idx],
+                                "label": face_labels[face_idx],
+                            })
+                        else:
+                            errors.append({
+                                "face": face_idx,
+                                "name": face_names[face_idx],
+                                "error": str(save_result),
+                            })
+
+                    if not saved_faces:
+                        result["error"] = "SaveTexture failed for all cubemap faces: %s" % errors
+                        return
+                    result["data"] = {
+                        "resource_id": resource_id,
+                        "output_path": output_path,
+                        "file_type": ft_name,
+                        "width": tex_desc.width,
+                        "height": tex_desc.height,
+                        "mip": use_mip,
+                        "slice": slice,
+                        "sample": sample,
+                        "format": self._format_name(tex_desc.format),
+                        "mip_levels": tex_desc.mips,
+                        "cubemap": True,
+                        "faces": len(saved_faces),
+                        "saved_faces": saved_faces,
+                        "errors": errors,
+                        "mode": "cubemap_faces",
+                    }
+                    return
+
+                if int(slice) < 0:
+                    result["error"] = "slice=-1 is only valid for cubemap all-face export"
+                    return
+
+                if is_cubemap and int(slice) >= 6:
+                    result["error"] = "Invalid cubemap face %d (valid faces: 0..5, or -1 for all)" % int(slice)
+                    return
+
+                texsave = self._build_texture_save(
+                    tex_desc, ft_map[ft_name], alpha_enum, use_mip, slice, sample)
+                save_result = controller.SaveTexture(texsave, output_path)
+                if not self._save_texture_result_ok(save_result):
+                    result["error"] = "SaveTexture failed for %s -> %s: %s" % (
+                        resource_id, output_path, str(save_result))
                     return
 
                 result["data"] = {
@@ -350,8 +609,9 @@ class ResourceService:
                     "mip": use_mip,
                     "slice": slice,
                     "sample": sample,
-                    "format": str(tex_desc.format.Name()),
+                    "format": self._format_name(tex_desc.format),
                     "mip_levels": tex_desc.mips,
+                    "cubemap": is_cubemap,
                 }
             except Exception as e:
                 import traceback
@@ -461,10 +721,7 @@ class ResourceService:
                     return
 
             # Create subresource specification
-            sub = rd.Subresource()
-            sub.mip = mip
-            sub.slice = slice
-            sub.sample = sample
+            sub = self._make_subresource(mip, slice, sample)
 
             # Get texture data
             try:

@@ -30,6 +30,7 @@ class Parsers:
         """Parse resource ID string to ResourceId object"""
         # Handle formats like "ResourceId::123" or just "123"
         rid = rd.ResourceId()
+        resource_id_str = str(resource_id_str)
         if "::" in resource_id_str:
             id_part = resource_id_str.split("::")[-1]
         else:
@@ -40,6 +41,7 @@ class Parsers:
     @staticmethod
     def extract_numeric_id(resource_id_str):
         """Extract numeric ID from resource ID string"""
+        resource_id_str = str(resource_id_str)
         if "::" in resource_id_str:
             return int(resource_id_str.split("::")[-1])
         return int(resource_id_str)

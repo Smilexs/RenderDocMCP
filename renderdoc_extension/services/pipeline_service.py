@@ -87,7 +87,7 @@ class PipelineService:
             candidates.extend(resources)
 
         for obj in candidates:
-            for attr in ("resource", "resourceId", "view", "viewResourceId"):
+            for attr in ("resource", "resourceId", "view", "viewResourceId", "imageView"):
                 if hasattr(obj, attr):
                     try:
                         rid = getattr(obj, attr)
@@ -124,6 +124,93 @@ class PipelineService:
             if rid_int != 0:
                 return rid, rid_int
         return None, 0
+
+    def _resolve_vulkan_descriptors(self, controller, pipe, stage, event_id):
+        """Best-effort fallback for Vulkan descriptor-set resource resolution."""
+        resolved = {}
+
+        # Some RenderDoc builds expose descriptor accesses on the controller.
+        try:
+            accesses = controller.GetDescriptorAccess()
+            for access in accesses:
+                bind = getattr(access, "index", getattr(access, "binding", -1))
+                rid, rid_int = self._extract_binding_resource(access)
+                if rid_int != 0 and bind is not None and int(bind) >= 0:
+                    resolved[int(bind)] = rid_int
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+        # Vulkan pipeline state carries descriptor sets/bindings in API-specific
+        # structures. Attribute names vary across RenderDoc versions, so this is
+        # deliberately defensive.
+        try:
+            vk_state = None
+            if hasattr(pipe, "vulkan"):
+                vk_state = pipe.vulkan
+            elif hasattr(pipe, "GetVulkanPipelineState"):
+                vk_state = pipe.GetVulkanPipelineState()
+
+            descriptor_sets = []
+            for root_name in ("graphics", "compute"):
+                root = getattr(vk_state, root_name, None) if vk_state else None
+                descriptor_sets.extend(list(getattr(root, "descriptorSets", []) or []))
+
+            for desc_set in descriptor_sets:
+                bindings = getattr(desc_set, "bindings", []) or []
+                for binding in bindings:
+                    bind_num = getattr(
+                        binding, "binding", getattr(binding, "descriptorIndex", -1))
+                    descriptors = (
+                        getattr(binding, "binds", None)
+                        or getattr(binding, "descriptors", None)
+                        or []
+                    )
+                    for descriptor in descriptors:
+                        rid, rid_int = self._extract_binding_resource(descriptor)
+                        if rid_int == 0:
+                            image_info = getattr(descriptor, "imageInfo", None)
+                            if image_info is not None:
+                                rid, rid_int = self._extract_binding_resource(image_info)
+                        if rid_int != 0 and bind_num is not None and int(bind_num) >= 0:
+                            resolved[int(bind_num)] = rid_int
+                            break
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+        # Last resort: resource usage can reveal sampled/read textures at the
+        # target event even when descriptor slot metadata is unavailable.
+        try:
+            next_slot = 0
+            for tex in controller.GetTextures():
+                try:
+                    usages = controller.GetUsage(tex.resourceId)
+                except Exception:
+                    continue
+                for usage in usages:
+                    used_event = getattr(usage, "eventId", getattr(usage, "eventID", 0))
+                    if int(used_event) != int(event_id):
+                        continue
+                    usage_type = str(getattr(usage, "usage", "")).lower()
+                    if (
+                        "read" in usage_type
+                        or "sample" in usage_type
+                        or "input" in usage_type
+                        or "fs" in usage_type
+                        or "ps" in usage_type
+                    ):
+                        rid_int = self._resource_id_int(tex.resourceId)
+                        if rid_int not in resolved.values():
+                            resolved[next_slot] = rid_int
+                            next_slot += 1
+                        break
+        except Exception:
+            pass
+
+        return resolved
 
     def _infer_texture_role(self, variable_name, texture_name, texture_format):
         """Infer a material texture role from shader variable/name/format hints."""
@@ -182,6 +269,15 @@ class PipelineService:
                 except Exception:
                     raw_bindings = []
                 bindings = list(raw_bindings or [])
+                api_name = ""
+                try:
+                    api_name = str(controller.GetAPIProperties().pipelineType)
+                except Exception:
+                    pass
+                vulkan_descriptors = {}
+                if "vulkan" in api_name.lower():
+                    vulkan_descriptors = self._resolve_vulkan_descriptors(
+                        controller, pipe, stage_enum, event_id)
 
                 texture_lookup = self._texture_lookup(controller)
                 name_lookup = self._resource_name_lookup(controller)
@@ -202,15 +298,24 @@ class PipelineService:
                     variable_name = getattr(ro, "name", "texture_%d" % idx)
                     bind_index = getattr(ro, "fixedBindNumber", idx)
                     rid, rid_int = self._resolve_bound_resource(bindings, bind_index)
+                    binding_source = "pipeline_binding" if rid_int != 0 else ""
                     if rid_int == 0 and bind_index != idx:
                         rid, rid_int = self._resolve_bound_resource(bindings, idx)
+                        binding_source = "pipeline_binding" if rid_int != 0 else ""
+                    if rid_int == 0:
+                        for key in (bind_index, idx):
+                            if key in vulkan_descriptors:
+                                rid_int = vulkan_descriptors[key]
+                                binding_source = "vulkan_descriptor_fallback"
+                                break
 
                     entry = {
                         "slot": idx,
                         "binding": bind_index,
                         "shader_name": variable_name,
-                        "resource_id": str(rid) if rid is not None else "",
+                        "resource_id": str(rid) if rid is not None else str(rid_int) if rid_int else "",
                         "id": rid_int,
+                        "binding_source": binding_source,
                     }
 
                     tex = texture_lookup.get(rid_int)
@@ -218,6 +323,7 @@ class PipelineService:
                     fmt_name = ""
                     if tex is not None:
                         fmt_name = self._format_name(getattr(tex, "format", ""))
+                        entry["resource_id"] = str(tex.resourceId)
                         entry.update({
                             "texture_name": tex_name,
                             "width": getattr(tex, "width", 0),
@@ -254,6 +360,35 @@ class PipelineService:
                             "shader_name": "",
                             "resource_id": str(rid),
                             "id": rid_int,
+                            "binding_source": "pipeline_binding_no_reflection",
+                            "texture_name": tex_name,
+                            "width": getattr(tex, "width", 0),
+                            "height": getattr(tex, "height", 0),
+                            "depth": getattr(tex, "depth", 0),
+                            "array_size": getattr(tex, "arraysize", 0),
+                            "mip_levels": getattr(tex, "mips", 0),
+                            "format": fmt_name,
+                            "dimension": str(getattr(tex, "type", "")),
+                            "msaa_samples": getattr(tex, "msSamp", 0),
+                            "cubemap": bool(getattr(tex, "cubemap", False)),
+                            "role": self._infer_texture_role("", tex_name, fmt_name),
+                        })
+
+                if not textures and vulkan_descriptors:
+                    for bind_index in sorted(vulkan_descriptors):
+                        rid_int = vulkan_descriptors[bind_index]
+                        tex = texture_lookup.get(rid_int)
+                        if tex is None:
+                            continue
+                        tex_name = name_lookup.get(rid_int, "")
+                        fmt_name = self._format_name(getattr(tex, "format", ""))
+                        textures.append({
+                            "slot": bind_index,
+                            "binding": bind_index,
+                            "shader_name": "",
+                            "resource_id": str(tex.resourceId),
+                            "id": rid_int,
+                            "binding_source": "vulkan_descriptor_fallback_no_reflection",
                             "texture_name": tex_name,
                             "width": getattr(tex, "width", 0),
                             "height": getattr(tex, "height", 0),

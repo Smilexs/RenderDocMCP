@@ -445,6 +445,152 @@ class ActionService:
             raise ValueError(result["error"])
         return result["data"]
 
+    def debug_pixel(self, event_id, x, y, sample=0, primitive=-1,
+                    max_steps=50, max_vars_per_step=10):
+        """Debug pixel shader execution for a screen pixel at an event."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            trace = None
+            try:
+                controller.SetFrameEvent(int(event_id), True)
+                inputs = rd.DebugPixelInputs()
+                inputs.sample = int(sample)
+                inputs.primitive = 0xFFFFFFFF if int(primitive) < 0 else int(primitive)
+
+                trace = controller.DebugPixel(int(x), int(y), inputs)
+                debugger = getattr(trace, "debugger", None) if trace else None
+                if not debugger:
+                    result["data"] = {
+                        "available": False,
+                        "event_id": int(event_id),
+                        "x": int(x),
+                        "y": int(y),
+                        "error": "No pixel debug trace returned",
+                    }
+                    return
+
+                steps = self._collect_debug_steps(
+                    controller, debugger, int(max_steps), int(max_vars_per_step))
+                result["data"] = {
+                    "available": True,
+                    "event_id": int(event_id),
+                    "x": int(x),
+                    "y": int(y),
+                    "sample": int(sample),
+                    "primitive": int(primitive),
+                    "step_count": len(steps),
+                    "trace": steps,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "debug_pixel error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+            finally:
+                if trace is not None:
+                    try:
+                        controller.FreeTrace(trace)
+                    except Exception:
+                        pass
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def debug_vertex(self, event_id, vertex_id, instance_id=0, index=0,
+                     view=0, max_steps=50, max_vars_per_step=10):
+        """Debug vertex shader execution for a vertex at an event."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            trace = None
+            try:
+                controller.SetFrameEvent(int(event_id), True)
+                trace = controller.DebugVertex(
+                    int(vertex_id), int(instance_id), int(index), int(view))
+                debugger = getattr(trace, "debugger", None) if trace else None
+                if not debugger:
+                    result["data"] = {
+                        "available": False,
+                        "event_id": int(event_id),
+                        "vertex_id": int(vertex_id),
+                        "instance_id": int(instance_id),
+                        "error": "No vertex debug trace returned",
+                    }
+                    return
+
+                steps = self._collect_debug_steps(
+                    controller, debugger, int(max_steps), int(max_vars_per_step))
+                result["data"] = {
+                    "available": True,
+                    "event_id": int(event_id),
+                    "vertex_id": int(vertex_id),
+                    "instance_id": int(instance_id),
+                    "index": int(index),
+                    "view": int(view),
+                    "step_count": len(steps),
+                    "trace": steps,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "debug_vertex error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+            finally:
+                if trace is not None:
+                    try:
+                        controller.FreeTrace(trace)
+                    except Exception:
+                        pass
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def _collect_debug_steps(self, controller, debugger, max_steps, max_vars_per_step):
+        """Collect a bounded shader debugger trace."""
+        steps = []
+        while len(steps) < max_steps:
+            batch = controller.ContinueDebug(debugger)
+            if not batch:
+                break
+            for state in batch:
+                step = {
+                    "step": getattr(state, "stepIndex", len(steps)),
+                }
+                source_vars = getattr(state, "sourceVars", None)
+                if source_vars:
+                    step["vars"] = [
+                        self._serialize_debug_var(var)
+                        for var in list(source_vars)[:max_vars_per_step]
+                    ]
+                steps.append(step)
+                if len(steps) >= max_steps:
+                    break
+        return steps
+
+    def _serialize_debug_var(self, var):
+        """Serialize one shader debugger source variable."""
+        data = {
+            "name": getattr(var, "name", ""),
+        }
+        try:
+            data["value"] = str(getattr(var, "value", ""))
+        except Exception:
+            pass
+        try:
+            data["type"] = str(getattr(var, "type", ""))
+        except Exception:
+            pass
+        return data
+
     def _counter_result_value(self, value, desc=None):
         """Decode RenderDoc CounterValue using the described result type first."""
         if value is None:

@@ -112,6 +112,21 @@ class RenderDocFacade:
         """Get API validation/debug messages"""
         return self._action.get_debug_messages()
 
+    def debug_pixel(self, event_id, x, y, sample=0, primitive=-1,
+                    max_steps=50, max_vars_per_step=10):
+        """Debug pixel shader execution for a pixel at an event"""
+        return self._action.debug_pixel(
+            event_id, x, y, sample, primitive, max_steps, max_vars_per_step
+        )
+
+    def debug_vertex(self, event_id, vertex_id, instance_id=0, index=0,
+                     view=0, max_steps=50, max_vars_per_step=10):
+        """Debug vertex shader execution for a vertex at an event"""
+        return self._action.debug_vertex(
+            event_id, vertex_id, instance_id, index, view,
+            max_steps, max_vars_per_step
+        )
+
     # ==================== Search Operations ====================
 
     def find_draws_by_shader(self, shader_name, stage=None):
@@ -151,6 +166,14 @@ class RenderDocFacade:
     def get_texture_data(self, resource_id, mip=0, slice=0, sample=0, depth_slice=None):
         """Get texture pixel data"""
         return self._resource.get_texture_data(resource_id, mip, slice, sample, depth_slice)
+
+    def pick_pixel(self, resource_id, x, y, mip=0, slice=0, sample=0):
+        """Read one pixel from a texture/render target"""
+        return self._resource.pick_pixel(resource_id, x, y, mip, slice, sample)
+
+    def pixel_history(self, resource_id, x, y, mip=0, slice=0, sample=0):
+        """Get modification history for one pixel"""
+        return self._resource.pixel_history(resource_id, x, y, mip, slice, sample)
 
     def export_texture_to_file(self, resource_id, output_path, file_type="PNG",
                                mip=0, slice=0, sample=0, alpha="Preserve",

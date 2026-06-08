@@ -24,6 +24,8 @@ class RequestHandler:
             "enumerate_counters": self._handle_enumerate_counters,
             "fetch_counters": self._handle_fetch_counters,
             "get_debug_messages": self._handle_get_debug_messages,
+            "debug_pixel": self._handle_debug_pixel,
+            "debug_vertex": self._handle_debug_vertex,
             "get_shader_info": self._handle_get_shader_info,
             "get_bound_textures": self._handle_get_bound_textures,
             "get_buffer_contents": self._handle_get_buffer_contents,
@@ -32,6 +34,8 @@ class RequestHandler:
             "get_resources": self._handle_get_resources,
             "get_texture_info": self._handle_get_texture_info,
             "get_texture_data": self._handle_get_texture_data,
+            "pick_pixel": self._handle_pick_pixel,
+            "pixel_history": self._handle_pixel_history,
             "export_texture_to_file": self._handle_export_texture_to_file,
             "get_pipeline_state": self._handle_get_pipeline_state,
             "get_mesh_data": self._handle_get_mesh_data,
@@ -156,6 +160,43 @@ class RequestHandler:
         """Handle get_debug_messages request"""
         return self.facade.get_debug_messages()
 
+    def _handle_debug_pixel(self, params):
+        """Handle debug_pixel request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        x = params.get("x")
+        y = params.get("y")
+        if x is None or y is None:
+            raise ValueError("x and y are required")
+        return self.facade.debug_pixel(
+            int(event_id),
+            int(x),
+            int(y),
+            int(params.get("sample", 0)),
+            int(params.get("primitive", -1)),
+            int(params.get("max_steps", 50)),
+            int(params.get("max_vars_per_step", 10)),
+        )
+
+    def _handle_debug_vertex(self, params):
+        """Handle debug_vertex request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        vertex_id = params.get("vertex_id")
+        if vertex_id is None:
+            raise ValueError("vertex_id is required")
+        return self.facade.debug_vertex(
+            int(event_id),
+            int(vertex_id),
+            int(params.get("instance_id", 0)),
+            int(params.get("index", 0)),
+            int(params.get("view", 0)),
+            int(params.get("max_steps", 50)),
+            int(params.get("max_vars_per_step", 10)),
+        )
+
     def _handle_get_shader_info(self, params):
         """Handle get_shader_info request"""
         event_id = params.get("event_id")
@@ -217,6 +258,42 @@ class RequestHandler:
         sample = params.get("sample", 0)
         depth_slice = params.get("depth_slice")  # None = full volume
         return self.facade.get_texture_data(resource_id, mip, slice_idx, sample, depth_slice)
+
+    def _handle_pick_pixel(self, params):
+        """Handle pick_pixel request"""
+        resource_id = params.get("resource_id")
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        x = params.get("x")
+        y = params.get("y")
+        if x is None or y is None:
+            raise ValueError("x and y are required")
+        return self.facade.pick_pixel(
+            resource_id,
+            int(x),
+            int(y),
+            int(params.get("mip", 0)),
+            int(params.get("slice", 0)),
+            int(params.get("sample", 0)),
+        )
+
+    def _handle_pixel_history(self, params):
+        """Handle pixel_history request"""
+        resource_id = params.get("resource_id")
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        x = params.get("x")
+        y = params.get("y")
+        if x is None or y is None:
+            raise ValueError("x and y are required")
+        return self.facade.pixel_history(
+            resource_id,
+            int(x),
+            int(y),
+            int(params.get("mip", 0)),
+            int(params.get("slice", 0)),
+            int(params.get("sample", 0)),
+        )
 
     def _handle_export_texture_to_file(self, params):
         """Handle export_texture_to_file request"""

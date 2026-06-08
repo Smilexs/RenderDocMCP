@@ -205,6 +205,8 @@ uv tool update-shell  # 添加到 PATH
 | `enumerate_counters` | 列出当前捕获可用的 GPU performance counters |
 | `fetch_counters` | 按 counter ID 获取 GPU counter 数值 |
 | `get_debug_messages` | 获取 API validation / driver debug messages |
+| `debug_pixel` | 调试指定 event 下某个屏幕像素的 Pixel Shader 执行过程 |
+| `debug_vertex` | 调试指定 event 下某个顶点的 Vertex Shader 执行过程 |
 | `find_draws_by_shader` | 按 Shader 名查找使用该 Shader 的 Draw |
 | `find_draws_by_texture` | 按贴图名查找使用该贴图的 Draw |
 | `find_draws_by_resource` | 按 Resource ID 精确查找使用该资源的 Draw |
@@ -216,6 +218,8 @@ uv tool update-shell  # 添加到 PATH
 | `get_resources` | 列出当前捕获中的所有 RenderDoc resources |
 | `get_texture_info` | 获取纹理元数据 |
 | `get_texture_data` | 获取纹理像素数据 (Base64)，**仅限小贴图**（base64 经上下文，大贴图会溢出） |
+| `pick_pixel` | 读取指定纹理/RT 的单个像素 RGBA 值 |
+| `pixel_history` | 获取指定 RT 像素在整帧中的修改历史 |
 | `export_texture_to_file` | **将纹理写入图片文件（宿主侧 SaveTexture），大贴图首选**，自动处理 typeless/解压/朝向 |
 | `get_pipeline_state` | 获取管线状态（含 IA 布局、VB/IB 绑定） |
 | `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析，返回对象空间数据） |

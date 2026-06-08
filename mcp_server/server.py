@@ -233,6 +233,86 @@ def get_debug_messages() -> dict:
 
 
 @mcp.tool
+def debug_pixel(
+    event_id: int,
+    x: int,
+    y: int,
+    sample: int = 0,
+    primitive: int = -1,
+    max_steps: int = 50,
+    max_vars_per_step: int = 10,
+) -> dict:
+    """
+    Debug pixel shader execution for a screen pixel at a specific draw event.
+
+    Args:
+        event_id: Draw event to debug
+        x: Pixel X coordinate in the current render target
+        y: Pixel Y coordinate in the current render target
+        sample: MSAA sample index (default 0)
+        primitive: Primitive ID, -1 lets RenderDoc choose (default)
+        max_steps: Maximum debug steps to return
+        max_vars_per_step: Maximum source variables per step
+
+    Returns a bounded shader debug trace. Availability depends on capture/API,
+    shader debug support, and driver capabilities.
+    """
+    return bridge.call(
+        "debug_pixel",
+        {
+            "event_id": event_id,
+            "x": x,
+            "y": y,
+            "sample": sample,
+            "primitive": primitive,
+            "max_steps": max_steps,
+            "max_vars_per_step": max_vars_per_step,
+        },
+        timeout=60.0,
+    )
+
+
+@mcp.tool
+def debug_vertex(
+    event_id: int,
+    vertex_id: int,
+    instance_id: int = 0,
+    index: int = 0,
+    view: int = 0,
+    max_steps: int = 50,
+    max_vars_per_step: int = 10,
+) -> dict:
+    """
+    Debug vertex shader execution for a vertex at a specific draw event.
+
+    Args:
+        event_id: Draw event to debug
+        vertex_id: Vertex ID to debug
+        instance_id: Instance ID (default 0)
+        index: Index within the draw (default 0)
+        view: Multiview/view index (default 0)
+        max_steps: Maximum debug steps to return
+        max_vars_per_step: Maximum source variables per step
+
+    Returns a bounded shader debug trace. Availability depends on capture/API,
+    shader debug support, and driver capabilities.
+    """
+    return bridge.call(
+        "debug_vertex",
+        {
+            "event_id": event_id,
+            "vertex_id": vertex_id,
+            "instance_id": instance_id,
+            "index": index,
+            "view": view,
+            "max_steps": max_steps,
+            "max_vars_per_step": max_vars_per_step,
+        },
+        timeout=60.0,
+    )
+
+
+@mcp.tool
 def get_shader_info(
     event_id: int,
     stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "compute"],
@@ -392,6 +472,77 @@ def get_texture_data(
 
 
 @mcp.tool
+def pick_pixel(
+    resource_id: str,
+    x: int,
+    y: int,
+    mip: int = 0,
+    slice: int = 0,
+    sample: int = 0,
+) -> dict:
+    """
+    Read one pixel value from a texture or render target.
+
+    Args:
+        resource_id: Texture resource ID
+        x: Pixel X coordinate
+        y: Pixel Y coordinate
+        mip: Mip level (default 0)
+        slice: Array slice or cube face (default 0)
+        sample: MSAA sample index (default 0)
+
+    Returns RGBA values as floats when RenderDoc can decode the format.
+    """
+    return bridge.call(
+        "pick_pixel",
+        {
+            "resource_id": resource_id,
+            "x": x,
+            "y": y,
+            "mip": mip,
+            "slice": slice,
+            "sample": sample,
+        },
+    )
+
+
+@mcp.tool
+def pixel_history(
+    resource_id: str,
+    x: int,
+    y: int,
+    mip: int = 0,
+    slice: int = 0,
+    sample: int = 0,
+) -> dict:
+    """
+    Get the modification history for one pixel across the frame.
+
+    Args:
+        resource_id: Render target texture resource ID
+        x: Pixel X coordinate
+        y: Pixel Y coordinate
+        mip: Mip level (default 0)
+        slice: Array slice or cube face (default 0)
+        sample: MSAA sample index (default 0)
+
+    Returns per-event pre/post values when RenderDoc can provide pixel history.
+    """
+    return bridge.call(
+        "pixel_history",
+        {
+            "resource_id": resource_id,
+            "x": x,
+            "y": y,
+            "mip": mip,
+            "slice": slice,
+            "sample": sample,
+        },
+        timeout=60.0,
+    )
+
+
+@mcp.tool
 def export_texture_to_file(
     resource_id: str,
     output_path: str,
@@ -421,7 +572,9 @@ def export_texture_to_file(
         file_type: PNG (default), JPG, BMP, TGA, HDR, EXR, or DDS. PNG/BMP/TGA/DDS keep
             alpha; JPG/HDR drop it. DDS preserves all mips/slices and exact format.
         mip: Mip level to save (default 0). Ignored for DDS (saves all).
-        slice: Array slice or cube face (default 0).
+        slice: Array slice or cube face (default 0). For cubemaps, pass -1 to
+            export all faces; DDS writes a single native cubemap, other formats
+            write one file per face with _faceN suffixes.
         sample: MSAA sample index (default 0).
         alpha: Preserve | Discard | BlendToColor | BlendToCheckerboard (default Preserve).
         event_id: Optional frame event to set first (needed for transient render targets;
