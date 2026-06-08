@@ -100,6 +100,18 @@ class RenderDocFacade:
             exclude_markers=exclude_markers,
         )
 
+    def enumerate_counters(self):
+        """List available GPU performance counters"""
+        return self._action.enumerate_counters()
+
+    def fetch_counters(self, counter_ids):
+        """Fetch GPU performance counter values"""
+        return self._action.fetch_counters(counter_ids)
+
+    def get_debug_messages(self):
+        """Get API validation/debug messages"""
+        return self._action.get_debug_messages()
+
     # ==================== Search Operations ====================
 
     def find_draws_by_shader(self, shader_name, stage=None):
@@ -119,6 +131,18 @@ class RenderDocFacade:
     def get_buffer_contents(self, resource_id, offset=0, length=0, event_id=None):
         """Get buffer data"""
         return self._resource.get_buffer_contents(resource_id, offset, length, event_id)
+
+    def get_textures(self):
+        """List texture resources"""
+        return self._resource.get_textures()
+
+    def get_buffers(self):
+        """List buffer resources"""
+        return self._resource.get_buffers()
+
+    def get_resources(self):
+        """List all resources"""
+        return self._resource.get_resources()
 
     def get_texture_info(self, resource_id):
         """Get texture metadata"""
@@ -148,6 +172,10 @@ class RenderDocFacade:
     def get_pipeline_state(self, event_id):
         """Get full pipeline state at an event"""
         return self._pipeline.get_pipeline_state(event_id)
+
+    def get_bound_textures(self, event_id, stage="pixel"):
+        """Get shader-stage texture bindings with role inference"""
+        return self._pipeline.get_bound_textures(event_id, stage)
 
     # ==================== Mesh Operations ====================
 

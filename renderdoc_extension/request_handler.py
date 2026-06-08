@@ -21,8 +21,15 @@ class RequestHandler:
             "find_draws_by_resource": self._handle_find_draws_by_resource,
             "get_draw_call_details": self._handle_get_draw_call_details,
             "get_action_timings": self._handle_get_action_timings,
+            "enumerate_counters": self._handle_enumerate_counters,
+            "fetch_counters": self._handle_fetch_counters,
+            "get_debug_messages": self._handle_get_debug_messages,
             "get_shader_info": self._handle_get_shader_info,
+            "get_bound_textures": self._handle_get_bound_textures,
             "get_buffer_contents": self._handle_get_buffer_contents,
+            "get_textures": self._handle_get_textures,
+            "get_buffers": self._handle_get_buffers,
+            "get_resources": self._handle_get_resources,
             "get_texture_info": self._handle_get_texture_info,
             "get_texture_data": self._handle_get_texture_data,
             "export_texture_to_file": self._handle_export_texture_to_file,
@@ -130,6 +137,25 @@ class RequestHandler:
             exclude_markers=exclude_markers,
         )
 
+    def _handle_enumerate_counters(self, params):
+        """Handle enumerate_counters request"""
+        return self.facade.enumerate_counters()
+
+    def _handle_fetch_counters(self, params):
+        """Handle fetch_counters request"""
+        counter_ids = params.get("counter_ids")
+        if not counter_ids:
+            raise ValueError("counter_ids is required")
+        if isinstance(counter_ids, str):
+            counter_ids = [int(x.strip()) for x in counter_ids.split(",") if x.strip()]
+        else:
+            counter_ids = [int(x) for x in counter_ids]
+        return self.facade.fetch_counters(counter_ids)
+
+    def _handle_get_debug_messages(self, params):
+        """Handle get_debug_messages request"""
+        return self.facade.get_debug_messages()
+
     def _handle_get_shader_info(self, params):
         """Handle get_shader_info request"""
         event_id = params.get("event_id")
@@ -144,6 +170,14 @@ class RequestHandler:
             int(event_id), stage, disassembly_target, include_bytecode
         )
 
+    def _handle_get_bound_textures(self, params):
+        """Handle get_bound_textures request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        stage = params.get("stage", "pixel")
+        return self.facade.get_bound_textures(int(event_id), stage)
+
     def _handle_get_buffer_contents(self, params):
         """Handle get_buffer_contents request"""
         resource_id = params.get("resource_id")
@@ -153,6 +187,18 @@ class RequestHandler:
         length = params.get("length", 0)
         event_id = params.get("event_id")
         return self.facade.get_buffer_contents(resource_id, offset, length, event_id)
+
+    def _handle_get_textures(self, params):
+        """Handle get_textures request"""
+        return self.facade.get_textures()
+
+    def _handle_get_buffers(self, params):
+        """Handle get_buffers request"""
+        return self.facade.get_buffers()
+
+    def _handle_get_resources(self, params):
+        """Handle get_resources request"""
+        return self.facade.get_resources()
 
     def _handle_get_texture_info(self, params):
         """Handle get_texture_info request"""

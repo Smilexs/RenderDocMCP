@@ -17,6 +17,7 @@ class Parsers:
             "domain": rd.ShaderStage.Domain,
             "geometry": rd.ShaderStage.Geometry,
             "pixel": rd.ShaderStage.Pixel,
+            "fragment": rd.ShaderStage.Pixel,
             "compute": rd.ShaderStage.Compute,
         }
         stage_lower = stage_str.lower()

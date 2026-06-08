@@ -55,22 +55,31 @@ RenderDocMCP/
 
 | 工具名 | 说明 |
 |--------|------|
+| `ping` | 检查 RenderDoc MCP Bridge 是否可达 |
 | `get_capture_status` | 检查捕获文件的加载状态 |
 | `get_frame_summary` | 获取当前帧的统计信息（API、Draw 数、Marker 列表等） |
 | `get_draw_calls` | 以层级结构获取绘制调用列表 |
 | `get_draw_call_details` | 获取指定绘制调用的详细信息 |
 | `get_action_timings` | 获取 GPU 计时（按 event_id / marker 过滤） |
+| `enumerate_counters` | 列出当前捕获可用的 GPU performance counters |
+| `fetch_counters` | 按 counter ID 获取 GPU counter 数值 |
+| `get_debug_messages` | 获取 API validation / driver debug messages |
 | `find_draws_by_shader` | 按 Shader 名查找使用该 Shader 的 Draw |
 | `find_draws_by_texture` | 按贴图名查找使用该贴图的 Draw |
 | `find_draws_by_resource` | 按 Resource ID 精确查找使用该资源的 Draw |
 | `get_shader_info` | 获取着色器源代码和常量缓冲区的值 |
+| `get_bound_textures` | 获取指定 event/stage 绑定的纹理，并推断 albedo/normal/roughness 等用途 |
 | `get_buffer_contents` | 获取缓冲区内容 (Base64)，可选 `event_id` 读取瞬态缓冲 |
+| `get_textures` | 列出当前捕获中的所有纹理资源 |
+| `get_buffers` | 列出当前捕获中的所有 buffer 资源 |
+| `get_resources` | 列出当前捕获中的所有 RenderDoc resources |
 | `get_texture_info` | 获取纹理元数据 |
 | `get_texture_data` | 获取纹理像素数据 (Base64) |
 | `get_pipeline_state` | 获取管线状态（含 IA 布局、VB/IB 绑定） |
 | `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析） |
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
+| `launch_renderdoc` | 启动 qrenderdoc 并打开 .rdc，等待 MCP Bridge ready |
 
 ### get_draw_calls 过滤选项
 

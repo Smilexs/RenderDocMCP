@@ -3,6 +3,10 @@ RenderDoc MCP Server
 FastMCP 2.0 server providing access to RenderDoc capture data.
 """
 
+import os
+import shutil
+import subprocess
+import time
 from typing import Literal
 
 from fastmcp import FastMCP
@@ -17,6 +21,20 @@ mcp = FastMCP(
 
 # RenderDoc bridge client
 bridge = RenderDocBridge(host=settings.renderdoc_host, port=settings.renderdoc_port)
+
+
+@mcp.tool
+def ping() -> dict:
+    """
+    Check whether the RenderDoc MCP bridge extension is reachable.
+
+    Returns status information without raising for a missing bridge, so clients can
+    use it as a lightweight health check before running heavier RenderDoc tools.
+    """
+    try:
+        return bridge.call("ping", timeout=3.0)
+    except RenderDocBridgeError as e:
+        return {"status": "error", "message": str(e)}
 
 
 @mcp.tool
@@ -180,6 +198,41 @@ def get_action_timings(
 
 
 @mcp.tool
+def enumerate_counters() -> dict:
+    """
+    List GPU performance counters available for the current capture.
+
+    Returns counter IDs, names, descriptions, units, and result types where the
+    active driver exposes them.
+    """
+    return bridge.call("enumerate_counters")
+
+
+@mcp.tool
+def fetch_counters(counter_ids: list[int]) -> dict:
+    """
+    Fetch values for specific GPU performance counters.
+
+    Args:
+        counter_ids: Counter IDs returned by enumerate_counters, for example [1].
+
+    Returns counter results grouped by event ID, including counter metadata.
+    """
+    return bridge.call("fetch_counters", {"counter_ids": counter_ids}, timeout=60.0)
+
+
+@mcp.tool
+def get_debug_messages() -> dict:
+    """
+    Get graphics API validation/debug messages recorded in the capture.
+
+    Returns messages with event IDs, severity, category/source when available, and
+    the driver/validation-layer description text.
+    """
+    return bridge.call("get_debug_messages")
+
+
+@mcp.tool
 def get_shader_info(
     event_id: int,
     stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "compute"],
@@ -218,6 +271,25 @@ def get_shader_info(
 
 
 @mcp.tool
+def get_bound_textures(
+    event_id: int,
+    stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "fragment", "compute"] = "pixel",
+) -> dict:
+    """
+    Get textures bound to a shader stage at an event, with inferred material roles.
+
+    Args:
+        event_id: The event ID to inspect
+        stage: Shader stage. "fragment" is accepted as an alias for "pixel".
+
+    Returns texture bindings with shader variable names, resource IDs, texture
+    metadata, and role guesses such as albedo, normal, roughness, metallic, AO,
+    emissive, shadow, or environment.
+    """
+    return bridge.call("get_bound_textures", {"event_id": event_id, "stage": stage})
+
+
+@mcp.tool
 def get_buffer_contents(
     resource_id: str,
     offset: int = 0,
@@ -242,6 +314,39 @@ def get_buffer_contents(
     if event_id is not None:
         params["event_id"] = event_id
     return bridge.call("get_buffer_contents", params)
+
+
+@mcp.tool
+def get_textures() -> dict:
+    """
+    List all texture resources alive in the current capture.
+
+    Returns resource IDs, names, dimensions, formats, mip counts, array sizes,
+    MSAA sample counts, and byte sizes when available.
+    """
+    return bridge.call("get_textures")
+
+
+@mcp.tool
+def get_buffers() -> dict:
+    """
+    List all buffer resources alive in the current capture.
+
+    Returns resource IDs, names, byte lengths, creation flags, and usage metadata
+    when RenderDoc exposes it.
+    """
+    return bridge.call("get_buffers")
+
+
+@mcp.tool
+def get_resources() -> dict:
+    """
+    List all resources in the current capture.
+
+    Returns RenderDoc resources with names and inferred type labels (texture,
+    buffer, or resource).
+    """
+    return bridge.call("get_resources")
 
 
 @mcp.tool
@@ -506,9 +611,139 @@ def open_capture(capture_path: str) -> dict:
     return bridge.call("open_capture", {"capture_path": capture_path})
 
 
+@mcp.tool
+def launch_renderdoc(capture_path: str, renderdoc_path: str = "") -> dict:
+    """
+    Launch qrenderdoc with a capture file and wait for the MCP bridge to respond.
+
+    If an existing RenderDoc instance already has the bridge online, this reuses it
+    and calls open_capture instead of spawning another process.
+
+    Args:
+        capture_path: Absolute path to the .rdc capture file
+        renderdoc_path: Optional qrenderdoc executable path or installation directory
+
+    Returns launch metadata including executable path, process ID, file size, and
+    whether the bridge became ready before the wait timeout.
+    """
+    if not capture_path:
+        return {"error": "capture_path is required"}
+    if not os.path.isfile(capture_path):
+        return {"error": "File not found: %s" % capture_path}
+    if not capture_path.lower().endswith(".rdc"):
+        return {"error": "Not an .rdc file: %s" % capture_path}
+
+    if bridge.is_bridge_alive():
+        result = bridge.call("open_capture", {"capture_path": capture_path}, timeout=60.0)
+        if isinstance(result, dict):
+            result["method"] = "open_capture"
+            result["bridge_already_running"] = True
+        return result
+
+    exe = _find_renderdoc_exe(renderdoc_path)
+    if not exe:
+        return {
+            "error": "Could not find qrenderdoc executable",
+            "searched_paths": _get_renderdoc_search_paths(),
+        }
+
+    popen_kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    try:
+        process = subprocess.Popen([exe, capture_path], **popen_kwargs)
+    except Exception as e:
+        return {"error": "Failed to launch RenderDoc: %s" % str(e), "exe": exe}
+
+    file_size_mb = os.path.getsize(capture_path) / (1024 * 1024)
+    if file_size_mb > 200:
+        max_wait = 90.0
+    elif file_size_mb > 50:
+        max_wait = 60.0
+    else:
+        max_wait = 40.0
+
+    elapsed = 0.0
+    poll_interval = 2.0
+    bridge_ready = False
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        if bridge.is_bridge_alive():
+            bridge_ready = True
+            break
+
+    return {
+        "launched": True,
+        "exe": exe,
+        "capture_path": capture_path,
+        "pid": process.pid,
+        "bridge_ready": bridge_ready,
+        "wait_seconds": elapsed if bridge_ready else max_wait,
+        "file_size_mb": round(file_size_mb, 1),
+        "status": (
+            "RenderDoc launched and MCP bridge is ready"
+            if bridge_ready
+            else "RenderDoc launched; capture may still be loading. Use ping to check readiness."
+        ),
+    }
+
+
+def _find_renderdoc_exe(user_path: str = "") -> str:
+    """Find qrenderdoc from an explicit path, env vars, PATH, or common installs."""
+    if user_path:
+        if os.path.isfile(user_path):
+            return user_path
+        for name in ("qrenderdoc.exe", "qrenderdoc"):
+            candidate = os.path.join(user_path, name)
+            if os.path.isfile(candidate):
+                return candidate
+
+    env_path = os.environ.get("RENDERDOC_PATH", "") or os.environ.get("RENDERDOC_MODULE_PATH", "")
+    if env_path:
+        if os.path.isfile(env_path):
+            return env_path
+        for name in ("qrenderdoc.exe", "qrenderdoc"):
+            candidate = os.path.join(env_path, name)
+            if os.path.isfile(candidate):
+                return candidate
+
+    path_exe = shutil.which("qrenderdoc")
+    if path_exe:
+        return path_exe
+
+    for candidate in _get_renderdoc_search_paths():
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _get_renderdoc_search_paths() -> list[str]:
+    """Return common qrenderdoc install paths for diagnostics."""
+    paths: list[str] = []
+    for drive in ("C", "D"):
+        paths.append("%s:\\Program Files\\RenderDoc\\qrenderdoc.exe" % drive)
+        paths.append("%s:\\Program Files (x86)\\RenderDoc\\qrenderdoc.exe" % drive)
+
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if local_appdata:
+        paths.append(os.path.join(local_appdata, "RenderDoc", "qrenderdoc.exe"))
+
+    paths.extend([
+        "/usr/bin/qrenderdoc",
+        "/usr/local/bin/qrenderdoc",
+        "/opt/renderdoc/bin/qrenderdoc",
+        "/Applications/RenderDoc.app/Contents/MacOS/qrenderdoc",
+    ])
+    return paths
+
+
 def main():
     """Run the MCP server"""
-    # 注册 16 个 @mcp.tool ！！！
     mcp.run()
 
 

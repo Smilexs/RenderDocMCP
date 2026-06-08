@@ -12,9 +12,277 @@ from ..utils import Parsers, Serializers, Helpers
 class PipelineService:
     """Pipeline state service"""
 
+    _ROLE_PATTERNS = (
+        (("albedo", "basecolor", "base_color", "diffuse", "maintex", "base map"), "albedo"),
+        (("normal", "bump", "nrm", "nor_"), "normal"),
+        (("roughness", "rough", "gloss", "smoothness"), "roughness"),
+        (("metallic", "metalness", "metal"), "metallic"),
+        (("ambientocclusion", "ambient_occlusion", "occlusion", "_ao", " ao"), "ao"),
+        (("emissive", "emission", "glow"), "emissive"),
+        (("opacity", "alpha", "transparent", "translucency"), "opacity"),
+        (("height", "displacement", "parallax"), "height"),
+        (("specular", "spec"), "specular"),
+        (("shadow", "shadowmap"), "shadow"),
+        (("environment", "reflection", "cubemap", "cube", "ibl", "sky"), "environment"),
+        (("depth", "zbuffer", "z_buffer"), "depth"),
+    )
+
     def __init__(self, ctx, invoke_fn):
         self.ctx = ctx
         self._invoke = invoke_fn
+
+    def _resource_id_int(self, resource_id):
+        """Convert a RenderDoc ResourceId to a stable integer when possible."""
+        try:
+            return int(resource_id)
+        except Exception:
+            try:
+                return Parsers.extract_numeric_id(str(resource_id))
+            except Exception:
+                return 0
+
+    def _format_name(self, fmt):
+        """Return a readable RenderDoc ResourceFormat name."""
+        try:
+            return str(fmt.Name())
+        except Exception:
+            try:
+                return str(fmt.name)
+            except Exception:
+                return str(fmt)
+
+    def _resource_name_lookup(self, controller):
+        """Build {numeric_resource_id: name} from RenderDoc resources."""
+        lookup = {}
+        try:
+            for res in controller.GetResources():
+                lookup[self._resource_id_int(res.resourceId)] = getattr(res, "name", "")
+        except Exception:
+            pass
+        return lookup
+
+    def _texture_lookup(self, controller):
+        """Build {numeric_resource_id: TextureDescription}."""
+        lookup = {}
+        try:
+            for tex in controller.GetTextures():
+                lookup[self._resource_id_int(tex.resourceId)] = tex
+        except Exception:
+            pass
+        return lookup
+
+    def _extract_binding_resource(self, binding):
+        """Return (ResourceId-like object, numeric id) from a bound resource shape."""
+        if binding is None:
+            return None, 0
+
+        candidates = []
+        descriptor = getattr(binding, "descriptor", None)
+        if descriptor is not None:
+            candidates.append(descriptor)
+        candidates.append(binding)
+
+        resources = getattr(binding, "resources", None)
+        if resources:
+            candidates.extend(resources)
+
+        for obj in candidates:
+            for attr in ("resource", "resourceId", "view", "viewResourceId"):
+                if hasattr(obj, attr):
+                    try:
+                        rid = getattr(obj, attr)
+                        rid_int = self._resource_id_int(rid)
+                        if rid_int != 0:
+                            return rid, rid_int
+                    except Exception:
+                        pass
+        return None, 0
+
+    def _resolve_bound_resource(self, bindings, index):
+        """Resolve a resource binding by access index or list position."""
+        if not bindings:
+            return None, 0
+
+        ordered = []
+        try:
+            for binding in bindings:
+                access = getattr(binding, "access", None)
+                access_index = getattr(access, "index", None) if access is not None else None
+                if access_index == index:
+                    ordered.append(binding)
+        except Exception:
+            pass
+
+        try:
+            if index is not None and index >= 0 and index < len(bindings):
+                ordered.append(bindings[index])
+        except Exception:
+            pass
+
+        for binding in ordered:
+            rid, rid_int = self._extract_binding_resource(binding)
+            if rid_int != 0:
+                return rid, rid_int
+        return None, 0
+
+    def _infer_texture_role(self, variable_name, texture_name, texture_format):
+        """Infer a material texture role from shader variable/name/format hints."""
+        combined = ("%s %s" % (variable_name or "", texture_name or "")).lower()
+        for keywords, role in self._ROLE_PATTERNS:
+            for keyword in keywords:
+                if keyword in combined:
+                    return role
+
+        fmt = (texture_format or "").lower()
+        if "bc5" in fmt:
+            return "normal"
+        if "bc6" in fmt:
+            return "environment"
+        if "depth" in fmt or "d24" in fmt or "d32" in fmt:
+            return "depth"
+        return "unknown"
+
+    def get_bound_textures(self, event_id, stage="pixel"):
+        """Get textures bound to a shader stage at an event with role inference."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                controller.SetFrameEvent(int(event_id), True)
+                pipe = controller.GetPipelineState()
+                stage_enum = Parsers.parse_stage(stage)
+
+                shader = pipe.GetShader(stage_enum)
+                if shader == rd.ResourceId.Null():
+                    result["data"] = {
+                        "event_id": event_id,
+                        "stage": stage,
+                        "count": 0,
+                        "textures": [],
+                        "note": "No shader bound at this stage",
+                    }
+                    return
+
+                reflection = None
+                try:
+                    reflection = pipe.GetShaderReflection(stage_enum)
+                except Exception:
+                    pass
+
+                try:
+                    raw_bindings = pipe.GetReadOnlyResources(stage_enum, False)
+                except TypeError:
+                    try:
+                        raw_bindings = pipe.GetReadOnlyResources(stage_enum)
+                    except Exception:
+                        raw_bindings = []
+                except Exception:
+                    raw_bindings = []
+                bindings = list(raw_bindings or [])
+
+                texture_lookup = self._texture_lookup(controller)
+                name_lookup = self._resource_name_lookup(controller)
+                textures = []
+
+                readonly_resources = []
+                if reflection:
+                    readonly_resources = list(getattr(reflection, "readOnlyResources", []) or [])
+
+                for idx, ro in enumerate(readonly_resources):
+                    is_texture = getattr(ro, "isTexture", None)
+                    res_type = str(getattr(ro, "resType", "")).lower()
+                    if is_texture is False:
+                        continue
+                    if is_texture is None and res_type and "texture" not in res_type:
+                        continue
+
+                    variable_name = getattr(ro, "name", "texture_%d" % idx)
+                    bind_index = getattr(ro, "fixedBindNumber", idx)
+                    rid, rid_int = self._resolve_bound_resource(bindings, bind_index)
+                    if rid_int == 0 and bind_index != idx:
+                        rid, rid_int = self._resolve_bound_resource(bindings, idx)
+
+                    entry = {
+                        "slot": idx,
+                        "binding": bind_index,
+                        "shader_name": variable_name,
+                        "resource_id": str(rid) if rid is not None else "",
+                        "id": rid_int,
+                    }
+
+                    tex = texture_lookup.get(rid_int)
+                    tex_name = name_lookup.get(rid_int, "")
+                    fmt_name = ""
+                    if tex is not None:
+                        fmt_name = self._format_name(getattr(tex, "format", ""))
+                        entry.update({
+                            "texture_name": tex_name,
+                            "width": getattr(tex, "width", 0),
+                            "height": getattr(tex, "height", 0),
+                            "depth": getattr(tex, "depth", 0),
+                            "array_size": getattr(tex, "arraysize", 0),
+                            "mip_levels": getattr(tex, "mips", 0),
+                            "format": fmt_name,
+                            "dimension": str(getattr(tex, "type", "")),
+                            "msaa_samples": getattr(tex, "msSamp", 0),
+                            "cubemap": bool(getattr(tex, "cubemap", False)),
+                        })
+                    else:
+                        entry["texture_name"] = tex_name
+
+                    entry["role"] = self._infer_texture_role(
+                        variable_name, tex_name, fmt_name)
+                    textures.append(entry)
+
+                # Fallback for captures where reflection lacks readOnlyResources.
+                if not textures and bindings:
+                    for idx, binding in enumerate(bindings):
+                        rid, rid_int = self._extract_binding_resource(binding)
+                        if rid_int == 0:
+                            continue
+                        tex = texture_lookup.get(rid_int)
+                        if tex is None:
+                            continue
+                        tex_name = name_lookup.get(rid_int, "")
+                        fmt_name = self._format_name(getattr(tex, "format", ""))
+                        textures.append({
+                            "slot": idx,
+                            "binding": idx,
+                            "shader_name": "",
+                            "resource_id": str(rid),
+                            "id": rid_int,
+                            "texture_name": tex_name,
+                            "width": getattr(tex, "width", 0),
+                            "height": getattr(tex, "height", 0),
+                            "depth": getattr(tex, "depth", 0),
+                            "array_size": getattr(tex, "arraysize", 0),
+                            "mip_levels": getattr(tex, "mips", 0),
+                            "format": fmt_name,
+                            "dimension": str(getattr(tex, "type", "")),
+                            "msaa_samples": getattr(tex, "msSamp", 0),
+                            "cubemap": bool(getattr(tex, "cubemap", False)),
+                            "role": self._infer_texture_role("", tex_name, fmt_name),
+                        })
+
+                result["data"] = {
+                    "event_id": event_id,
+                    "stage": stage,
+                    "shader_resource_id": str(shader),
+                    "count": len(textures),
+                    "textures": textures,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "get_bound_textures error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
 
     def get_shader_info(self, event_id, stage, disassembly_target=None,
                         include_bytecode=False):

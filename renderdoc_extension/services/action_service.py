@@ -313,3 +313,161 @@ class ActionService:
         if result["error"]:
             raise ValueError(result["error"])
         return result["data"]
+
+    def enumerate_counters(self):
+        """List GPU counters available for the current capture."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                counters = []
+                for counter in controller.EnumerateCounters():
+                    try:
+                        desc = controller.DescribeCounter(counter)
+                    except Exception:
+                        desc = None
+                    counters.append({
+                        "id": int(counter),
+                        "name": getattr(desc, "name", str(counter)) if desc else str(counter),
+                        "description": getattr(desc, "description", "") if desc else "",
+                        "unit": str(getattr(desc, "unit", "")) if desc else "",
+                        "result_type": str(getattr(desc, "resultType", "")) if desc else "",
+                    })
+                result["data"] = {
+                    "count": len(counters),
+                    "counters": counters,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "enumerate_counters error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def fetch_counters(self, counter_ids):
+        """Fetch GPU counter values for specific counter IDs."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if not counter_ids:
+            raise ValueError("counter_ids is required")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                available = {}
+                try:
+                    for counter in controller.EnumerateCounters():
+                        available[int(counter)] = counter
+                except Exception:
+                    pass
+
+                counters = []
+                for counter_id in counter_ids:
+                    numeric_id = int(counter_id)
+                    if numeric_id in available:
+                        counters.append(available[numeric_id])
+                    else:
+                        counters.append(rd.GPUCounter(numeric_id))
+
+                descriptions = {}
+                for counter in counters:
+                    try:
+                        descriptions[int(counter)] = controller.DescribeCounter(counter)
+                    except Exception:
+                        descriptions[int(counter)] = None
+
+                counter_results = controller.FetchCounters(counters)
+                values = []
+                for item in counter_results:
+                    counter_id = int(item.counter)
+                    desc = descriptions.get(counter_id)
+                    values.append({
+                        "event_id": getattr(item, "eventId", 0),
+                        "counter_id": counter_id,
+                        "counter_name": getattr(desc, "name", str(counter_id)) if desc else str(counter_id),
+                        "unit": str(getattr(desc, "unit", "")) if desc else "",
+                        "value": self._counter_result_value(
+                            getattr(item, "value", None), desc),
+                    })
+
+                result["data"] = {
+                    "counter_ids": [int(c) for c in counter_ids],
+                    "count": len(values),
+                    "values": values,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "fetch_counters error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def get_debug_messages(self):
+        """Return API validation/debug messages recorded in the capture."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                messages = []
+                for msg in controller.GetDebugMessages():
+                    messages.append({
+                        "event_id": getattr(msg, "eventId", 0),
+                        "message_id": getattr(msg, "messageID", getattr(msg, "messageId", "")),
+                        "category": str(getattr(msg, "category", "")),
+                        "severity": str(getattr(msg, "severity", "")),
+                        "source": str(getattr(msg, "source", "")),
+                        "description": getattr(msg, "description", ""),
+                    })
+                result["data"] = {
+                    "count": len(messages),
+                    "messages": messages,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "get_debug_messages error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def _counter_result_value(self, value, desc=None):
+        """Decode RenderDoc CounterValue using the described result type first."""
+        if value is None:
+            return None
+
+        result_type = str(getattr(desc, "resultType", "")) if desc else ""
+        preferred = []
+        if "Double" in result_type:
+            preferred = ["d"]
+        elif "Float" in result_type:
+            preferred = ["f", "d"]
+        elif "UInt64" in result_type or "Uint64" in result_type:
+            preferred = ["u64", "u32"]
+        elif "SInt64" in result_type or "Int64" in result_type:
+            preferred = ["s64", "s32"]
+        elif "UInt" in result_type or "Uint" in result_type:
+            preferred = ["u32", "u64"]
+        elif "SInt" in result_type or "Int" in result_type:
+            preferred = ["s32", "s64"]
+
+        for attr in preferred + ["d", "f", "u64", "s64", "u32", "s32"]:
+            try:
+                return getattr(value, attr)
+            except Exception:
+                pass
+        return str(value)

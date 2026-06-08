@@ -26,6 +26,161 @@ class ResourceService:
                 return tex
         return None
 
+    def _resource_id_int(self, resource_id):
+        """Convert a RenderDoc ResourceId to a stable integer when possible."""
+        try:
+            return int(resource_id)
+        except Exception:
+            try:
+                return Parsers.extract_numeric_id(str(resource_id))
+            except Exception:
+                return 0
+
+    def _resource_name_lookup(self, controller):
+        """Build {numeric_resource_id: name} from RenderDoc resources."""
+        lookup = {}
+        try:
+            for res in controller.GetResources():
+                rid = self._resource_id_int(res.resourceId)
+                lookup[rid] = getattr(res, "name", "")
+        except Exception:
+            pass
+        return lookup
+
+    def _format_name(self, fmt):
+        """Return a readable RenderDoc ResourceFormat name."""
+        try:
+            return str(fmt.Name())
+        except Exception:
+            try:
+                return str(fmt.name)
+            except Exception:
+                return str(fmt)
+
+    def get_textures(self):
+        """List all texture resources alive in the current capture."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"textures": None, "error": None}
+
+        def callback(controller):
+            try:
+                name_lookup = self._resource_name_lookup(controller)
+                textures = []
+                for tex in controller.GetTextures():
+                    rid = self._resource_id_int(tex.resourceId)
+                    textures.append({
+                        "resource_id": str(tex.resourceId),
+                        "id": rid,
+                        "name": name_lookup.get(rid, ""),
+                        "width": getattr(tex, "width", 0),
+                        "height": getattr(tex, "height", 0),
+                        "depth": getattr(tex, "depth", 0),
+                        "array_size": getattr(tex, "arraysize", 0),
+                        "mip_levels": getattr(tex, "mips", 0),
+                        "format": self._format_name(getattr(tex, "format", "")),
+                        "dimension": str(getattr(tex, "type", "")),
+                        "msaa_samples": getattr(tex, "msSamp", 0),
+                        "byte_size": getattr(tex, "byteSize", 0),
+                        "cubemap": bool(getattr(tex, "cubemap", False)),
+                    })
+                result["textures"] = {
+                    "count": len(textures),
+                    "textures": textures,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "get_textures error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["textures"]
+
+    def get_buffers(self):
+        """List all buffer resources alive in the current capture."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"buffers": None, "error": None}
+
+        def callback(controller):
+            try:
+                name_lookup = self._resource_name_lookup(controller)
+                buffers = []
+                for buf in controller.GetBuffers():
+                    rid = self._resource_id_int(buf.resourceId)
+                    buffers.append({
+                        "resource_id": str(buf.resourceId),
+                        "id": rid,
+                        "name": name_lookup.get(rid, ""),
+                        "length": getattr(buf, "length", 0),
+                        "creation_flags": str(getattr(buf, "creationFlags", "")),
+                        "byte_stride": getattr(buf, "byteStride", 0),
+                        "structure_byte_stride": getattr(buf, "structureByteStride", 0),
+                    })
+                result["buffers"] = {
+                    "count": len(buffers),
+                    "buffers": buffers,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "get_buffers error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["buffers"]
+
+    def get_resources(self):
+        """List all RenderDoc resources with inferred broad resource type."""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"resources": None, "error": None}
+
+        def callback(controller):
+            try:
+                texture_ids = set()
+                buffer_ids = set()
+                for tex in controller.GetTextures():
+                    texture_ids.add(self._resource_id_int(tex.resourceId))
+                for buf in controller.GetBuffers():
+                    buffer_ids.add(self._resource_id_int(buf.resourceId))
+
+                resources = []
+                for res in controller.GetResources():
+                    rid = self._resource_id_int(res.resourceId)
+                    if rid in texture_ids:
+                        res_type = "texture"
+                    elif rid in buffer_ids:
+                        res_type = "buffer"
+                    else:
+                        res_type = str(getattr(res, "type", "resource"))
+                    resources.append({
+                        "resource_id": str(res.resourceId),
+                        "id": rid,
+                        "name": getattr(res, "name", ""),
+                        "type": res_type,
+                    })
+
+                result["resources"] = {
+                    "count": len(resources),
+                    "resources": resources,
+                }
+            except Exception as e:
+                import traceback
+                result["error"] = "get_resources error: %s\n%s" % (
+                    str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["resources"]
+
     def get_buffer_contents(self, resource_id, offset=0, length=0, event_id=None):
         """Get buffer data. Optionally set frame event first for transient buffers."""
         if not self.ctx.IsCaptureLoaded():
