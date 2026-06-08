@@ -176,11 +176,11 @@ get_mesh_data(event_id=123)
 ```bash
 cd <仓库根目录>          # 即本 CLAUDE.md 所在目录
 python -m py_compile renderdoc_extension/services/<改的文件>.py   # 先语法自检
-python scripts/install_extension.py install --target all          # 拷贝到所有 extensions 目录
+python scripts/install_extension.py install --target all          # 拷贝到所有 extensions 目录并启用 Always Load
 # 清理已安装副本的字节码缓存，避免加载旧 .pyc
 find "$APPDATA/qrenderzzs/extensions/renderdoc_mcp_bridge" -name __pycache__ -type d -exec rm -rf {} +
 ```
-然后**重启 RenderDoc + 重新打开截帧**（必要时 Tools → Manage Extensions 重新启用插件）。
+然后**重启 RenderDoc + 重新打开截帧**，扩展会通过 Always Load 自动加载。
 安装目标目录的多目标配置见 README「自定义 / 自编译 RenderDoc（多目标支持）」。
 
 ### ⚠️ 关键坑：文件拷贝不会热重载

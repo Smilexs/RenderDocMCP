@@ -31,6 +31,10 @@ Config file format (``.renderdocmcp.json``):
 
 Paths may contain ``~`` and ``%VAR%`` / ``$VAR`` style environment
 variables — they are expanded before use.
+
+By default installation also updates the target RenderDoc ``UI.config`` and
+adds ``renderdoc_mcp_bridge`` to ``AlwaysLoad_Extensions``. Pass
+``--no-always-load`` to copy files without changing RenderDoc UI settings.
 """
 
 import argparse
@@ -42,6 +46,8 @@ from pathlib import Path
 
 
 CONFIG_FILENAME = ".renderdocmcp.json"
+EXTENSION_DIRNAME = "renderdoc_mcp_bridge"
+ALWAYS_LOAD_KEY = "AlwaysLoad_Extensions"
 
 
 def builtin_default_extension_dir() -> Path:
@@ -158,6 +164,112 @@ def copy_extension(src: Path, dest: Path) -> None:
     )
 
 
+def ui_config_path_for_extension_dir(extension_dir: Path) -> Path:
+    """Return the RenderDoc UI config path for an extensions directory."""
+    return extension_dir.parent / "UI.config"
+
+
+def read_ui_config(config_path: Path, create_if_missing: bool) -> dict | None:
+    """Load a RenderDoc UI.config file."""
+    if not config_path.exists():
+        return {} if create_if_missing else None
+    try:
+        with config_path.open("r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("failed to read %s: %s" % (config_path, exc)) from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("%s does not contain a JSON object" % config_path)
+    return data
+
+
+def write_ui_config(config_path: Path, data: dict) -> None:
+    """Write a RenderDoc UI.config file atomically."""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = config_path.with_name(config_path.name + ".tmp")
+    with tmp_path.open("w", encoding="utf-8", newline="\n") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+        f.write("\n")
+    os.replace(str(tmp_path), str(config_path))
+
+
+def is_always_load_configured(config_path: Path) -> bool:
+    """Return whether this extension is listed in AlwaysLoad_Extensions."""
+    data = read_ui_config(config_path, create_if_missing=False)
+    if data is None:
+        return False
+    entries = data.get(ALWAYS_LOAD_KEY, [])
+    if not isinstance(entries, list):
+        return False
+    return EXTENSION_DIRNAME in entries
+
+
+def configure_always_load(extension_dir: Path, enabled: bool) -> tuple[Path, bool]:
+    """Add or remove this extension from RenderDoc's AlwaysLoad_Extensions."""
+    config_path = ui_config_path_for_extension_dir(extension_dir)
+    data = read_ui_config(config_path, create_if_missing=enabled)
+    if data is None:
+        return config_path, False
+
+    entries = data.get(ALWAYS_LOAD_KEY)
+    changed = False
+    if not isinstance(entries, list):
+        if entries is not None:
+            print("  Warning: %s is not a list in %s; replacing it"
+                  % (ALWAYS_LOAD_KEY, config_path))
+        entries = []
+        data[ALWAYS_LOAD_KEY] = entries
+        changed = True
+
+    if enabled:
+        if EXTENSION_DIRNAME not in entries:
+            entries.append(EXTENSION_DIRNAME)
+            changed = True
+    else:
+        filtered = [entry for entry in entries if entry != EXTENSION_DIRNAME]
+        if len(filtered) != len(entries):
+            data[ALWAYS_LOAD_KEY] = filtered
+            changed = True
+
+    if changed:
+        write_ui_config(config_path, data)
+    return config_path, changed
+
+
+def verify_targets(args, project_root: Path) -> bool:
+    """Verify copied extension files and AlwaysLoad_Extensions state."""
+    expect_absent = args.command == "uninstall"
+    ok = True
+    print("Expected extension files: %s" % ("absent" if expect_absent else "present"))
+    if not args.no_always_load:
+        print("Expected Always Load: %s" % ("disabled" if expect_absent else "enabled"))
+
+    for label, ext_dir in resolve_targets(args, project_root):
+        dest = ext_dir / EXTENSION_DIRNAME
+        file_ok = (not dest.exists()) if expect_absent else dest.exists()
+        if file_ok:
+            prefix = "[OK]"
+        else:
+            prefix = "[PRESENT]" if expect_absent else "[MISSING]"
+            ok = False
+        print("%s %s: %s" % (prefix, label, dest))
+
+        if args.no_always_load:
+            continue
+
+        config_path = ui_config_path_for_extension_dir(ext_dir)
+        always_load_enabled = is_always_load_configured(config_path)
+        config_ok = (not always_load_enabled) if expect_absent else always_load_enabled
+        if config_ok:
+            prefix = "[OK]"
+        else:
+            prefix = "[ENABLED]" if expect_absent else "[DISABLED]"
+            ok = False
+        print("%s %s Always Load: %s" % (prefix, label, config_path))
+
+    return ok
+
+
 def install(args) -> None:
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
@@ -169,14 +281,21 @@ def install(args) -> None:
 
     targets = resolve_targets(args, project_root)
     for label, ext_dir in targets:
-        dest = ext_dir / "renderdoc_mcp_bridge"
+        dest = ext_dir / EXTENSION_DIRNAME
         print("Installing to [%s] %s" % (label, dest))
         copy_extension(extension_src, dest)
+        if not args.no_always_load:
+            config_path, changed = configure_always_load(ext_dir, enabled=True)
+            action = "Updated" if changed else "Already configured"
+            print("  %s Always Load in %s" % (action, config_path))
         print("  Done.")
 
     print("")
-    print("Please restart each affected RenderDoc instance and enable the extension in:")
-    print("  Tools > Manage Extensions > RenderDoc MCP Bridge")
+    print("Please restart each affected RenderDoc instance.")
+    if args.no_always_load:
+        print("Then enable the extension in Tools > Manage Extensions.")
+    else:
+        print("RenderDoc will load renderdoc_mcp_bridge automatically on startup.")
 
 
 def uninstall(args) -> None:
@@ -184,12 +303,16 @@ def uninstall(args) -> None:
     project_root = script_dir.parent
     targets = resolve_targets(args, project_root)
     for label, ext_dir in targets:
-        dest = ext_dir / "renderdoc_mcp_bridge"
+        dest = ext_dir / EXTENSION_DIRNAME
         if dest.exists():
             shutil.rmtree(dest)
             print("Uninstalled [%s] from %s" % (label, dest))
         else:
             print("Not installed [%s] at %s" % (label, dest))
+        if not args.no_always_load:
+            config_path, changed = configure_always_load(ext_dir, enabled=False)
+            action = "Removed" if changed else "Already absent"
+            print("  %s Always Load entry in %s" % (action, config_path))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -215,6 +338,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Named target from .renderdocmcp.json. May be given multiple times. "
              "Use 'all' to install to every configured target.",
+    )
+    parser.add_argument(
+        "--no-always-load",
+        action="store_true",
+        help="Do not update RenderDoc UI.config AlwaysLoad_Extensions.",
     )
     return parser
 

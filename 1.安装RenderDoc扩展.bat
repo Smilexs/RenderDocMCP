@@ -89,7 +89,7 @@ if exist "%CONFIG_FILE%" (
 )
 echo.
 
-echo === [3/4] Install extension ===
+echo === [3/4] Install extension and configure Always Load ===
 echo [RUN] %PYTHON_CMD% "%INSTALLER%" %INSTALL_ARGS%
 %PYTHON_CMD% "%INSTALLER%" %INSTALL_ARGS%
 if errorlevel 1 (
@@ -100,13 +100,13 @@ if errorlevel 1 (
 )
 echo.
 
-echo === [4/4] Verify installed targets ===
-%PYTHON_CMD% -c "import importlib.util, pathlib, sys; script=pathlib.Path(r'%INSTALLER%'); spec=importlib.util.spec_from_file_location('install_extension', script); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); args=mod.build_parser().parse_args(sys.argv[1:]); root=pathlib.Path(r'%PROJECT_DIR%'); expect_absent=args.command=='uninstall'; ok=True; print('Expected state: ' + ('absent' if expect_absent else 'present')); [print((('[OK] ' if ((not p.exists()) if expect_absent else p.exists()) else ('[PRESENT] ' if expect_absent else '[MISSING] ')) + label + ': ' + str(p))) or (None if ((not p.exists()) if expect_absent else p.exists()) else globals().__setitem__('ok', False)) for label, ext_dir in mod.resolve_targets(args, root) for p in [ext_dir / 'renderdoc_mcp_bridge']]; sys.exit(0 if ok else 1)" %INSTALL_ARGS%
+echo === [4/4] Verify installed targets and settings ===
+%PYTHON_CMD% -c "import importlib.util, pathlib, sys; script=pathlib.Path(r'%INSTALLER%'); spec=importlib.util.spec_from_file_location('install_extension', script); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); args=mod.build_parser().parse_args(sys.argv[1:]); root=pathlib.Path(r'%PROJECT_DIR%'); sys.exit(0 if mod.verify_targets(args, root) else 1)" %INSTALL_ARGS%
 if errorlevel 1 (
-    echo [WARN] Command completed, but one or more target directories did not match the expected state.
+    echo [WARN] Command completed, but one or more target directories or settings did not match the expected state.
     echo        Check .renderdocmcp.json and the installer log above.
 ) else (
-    echo [OK] Target directories match the requested operation.
+    echo [OK] Target directories and settings match the requested operation.
 )
 
 echo.
@@ -115,8 +115,8 @@ echo Done
 echo ============================================================
 echo Next steps:
 echo   1. Restart RenderDoc.
-echo   2. Open Tools ^> Manage Extensions.
-echo   3. Enable "RenderDoc MCP Bridge".
+echo   2. renderdoc_mcp_bridge will be loaded automatically.
+echo   3. If RenderDoc was open while installing, close it before starting it again.
 
 set "EXITCODE=0"
 goto :finish

@@ -108,6 +108,7 @@ python scripts/install_extension.py
 ```
 
 默认安装到 `%APPDATA%\qrenderdoc\extensions\renderdoc_mcp_bridge`（Linux/macOS: `~/.local/share/qrenderdoc/extensions/`）。
+安装器会同步写入 RenderDoc 的 `UI.config`，把 `renderdoc_mcp_bridge` 加入 `AlwaysLoad_Extensions`；下次启动 RenderDoc 时会自动加载。若只想复制文件、不改 RenderDoc 配置，可追加 `--no-always-load`。
 
 #### 自定义 / 自编译 RenderDoc（多目标支持）
 
@@ -140,11 +141,9 @@ python scripts/install_extension.py
 
 卸载同样支持上述参数：`python scripts/install_extension.py uninstall [--target ...]`。
 
-### 2. 在 RenderDoc 中启用扩展
+### 2. 重启 RenderDoc
 
-1. 启动 RenderDoc
-2. Tools > Manage Extensions
-3. 启用 "RenderDoc MCP Bridge"
+安装脚本已经启用了 Always Load。关闭并重新启动 RenderDoc 后，`renderdoc_mcp_bridge` 会自动加载。
 
 ### 3. 安装 MCP 服务器
 
