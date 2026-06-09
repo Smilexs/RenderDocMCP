@@ -476,6 +476,63 @@ export_mesh_to_file(event_id=123, output_path="D:\\Temp\\mesh_123.json", pos_slo
 > **Note**: 目前仅在 Windows + DirectX 11 环境中进行过运行确认。
 > 在 Linux/macOS + Vulkan/OpenGL 环境中也可能运行，但尚未验证。
 
+## Windows EXE Installer
+
+项目支持在 Windows 上构建安装包，把 MCP Server 打包成
+`renderdoc-mcp.exe`，并用 Inno Setup 生成安装程序。安装程序会完成原来
+`.bat` 脚本里的主要步骤：安装 MCP Server、复制 RenderDoc 扩展，并配置
+RenderDoc 的 `AlwaysLoad_Extensions`。
+
+### 安装依赖工具
+
+在需要构建安装包的电脑上安装 `uv` 和 Inno Setup 6：
+
+```powershell
+winget install -e --id astral-sh.uv
+winget install -e --id JRSoftware.InnoSetup
+```
+
+如果 Inno Setup 已经安装，但 `ISCC.exe` 不在 PATH 里，可以在构建时显式传入路径：
+
+```powershell
+.\packaging\windows\build.ps1 -InnoSetupCompiler "C:\Users\<用户名>\AppData\Local\Programs\Inno Setup 6\ISCC.exe"
+```
+
+### 验证环境
+
+```powershell
+uv --version
+where.exe ISCC.exe
+```
+
+`where.exe ISCC.exe` 应能输出类似：
+
+```text
+C:\Users\<用户名>\AppData\Local\Programs\Inno Setup 6\ISCC.exe
+```
+
+### 构建安装包
+
+在项目根目录执行：
+
+```powershell
+.\packaging\windows\build.ps1
+```
+
+成功后会生成：
+
+```text
+dist\windows\RenderDocMCP-Setup-1.0.0.exe
+```
+
+如果后续版本号在 `pyproject.toml` 中变更，输出文件名会随版本号变化，例如：
+
+```text
+dist\windows\RenderDocMCP-Setup-<version>.exe
+```
+
+更多安装、更新和 MCP 客户端配置说明见 `docs/windows-installer.md`。
+
 ## 许可证
 
 MIT
