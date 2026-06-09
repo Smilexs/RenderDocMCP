@@ -41,6 +41,7 @@ class RequestHandler:
             "get_mesh_data": self._handle_get_mesh_data,
             "get_world_matrix": self._handle_get_world_matrix,
             "export_mesh_to_file": self._handle_export_mesh_to_file,
+            "export_postvs_to_file": self._handle_export_postvs_to_file,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
             "capture_frame": self._handle_capture_frame,
@@ -430,6 +431,21 @@ class RequestHandler:
             int(params.get("extra_slot", 5)),
             int(params.get("o2w_offset", 32)),
             int(params.get("w2o_offset", 96)),
+        )
+
+    def _handle_export_postvs_to_file(self, params):
+        """Handle export_postvs_to_file request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        output_path = params.get("output_path")
+        if not output_path:
+            raise ValueError("output_path is required")
+        return self.facade.export_postvs_to_file(
+            int(event_id),
+            output_path,
+            int(params.get("instance", 0)),
+            int(params.get("view", 0)),
         )
 
     def _handle_list_captures(self, params):

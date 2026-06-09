@@ -264,6 +264,7 @@ uv tool update-shell  # 添加到 PATH
 | `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析，返回对象空间数据） |
 | `get_world_matrix` | 从 VS cb0 读取 Unity `unity_ObjectToWorld` / `unity_WorldToObject` 矩阵 |
 | `export_mesh_to_file` | 将 Draw 的顶点/索引数据写入 JSON 文件，可烘焙到世界空间，适合大模型导出 |
+| `export_postvs_to_file` | 导出 RenderDoc PostVS/VSOut 顶点到 JSON 文件，适合蒙皮网格的动画后世界空间姿态 |
 
 ### 捕获文件与目标程序控制
 
@@ -466,6 +467,25 @@ export_mesh_to_file(event_id=123, output_path="D:\\Temp\\mesh_123_object.json", 
 # 如果顶点属性所在 slot 与默认 Unity 布局不同，可显式指定
 export_mesh_to_file(event_id=123, output_path="D:\\Temp\\mesh_123.json", pos_slot=0, normal_slot=1, tangent_slot=2, uv0_slot=3)
 ```
+
+### 导出蒙皮后的 PostVS 网格到文件
+
+```
+# 用于 skinned mesh：读取 Vertex Shader 输出后的 PostVS 数据，而不是输入 VB 的 bind pose
+export_postvs_to_file(event_id=123, output_path="D:\\Temp\\character_postvs_123.json")
+
+# instanced draw 或 multiview 场景可指定 instance/view
+export_postvs_to_file(
+    event_id=123,
+    output_path="D:\\Temp\\character_postvs_123.json",
+    instance=0,
+    view=0)
+```
+
+`export_postvs_to_file` 会从 PostVS 的 `SV_Position` 反推世界空间 position，写出与
+`export_mesh_to_file` 兼容的 JSON schema：`num_indices`、`num_vertices`、`indices`、
+`position`。当前 fast path 只写 position + indices；normal/uv 可在 Unity 侧重算，或从
+`export_mesh_to_file` 的 bind-pose 导出结果中补取。
 
 ## 要求
 

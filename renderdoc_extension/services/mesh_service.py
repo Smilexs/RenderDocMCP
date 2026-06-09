@@ -147,6 +147,27 @@ def _normalize3(v):
     return [v[0] / m, v[1] / m, v[2] / m]
 
 
+def _invert4x4(m):
+    """Invert a 4x4 matrix (list of 4 rows of 4). Returns None if singular."""
+    # Build augmented [m | I] and Gauss-Jordan eliminate.
+    a = [list(m[r]) + [1.0 if c == r else 0.0 for c in range(4)] for r in range(4)]
+    for col in range(4):
+        # Pivot: largest abs in this column at/below diagonal.
+        piv = max(range(col, 4), key=lambda r: abs(a[r][col]))
+        if abs(a[piv][col]) < 1e-12:
+            return None
+        a[col], a[piv] = a[piv], a[col]
+        pv = a[col][col]
+        a[col] = [x / pv for x in a[col]]
+        for r in range(4):
+            if r == col:
+                continue
+            factor = a[r][col]
+            if factor != 0.0:
+                a[r] = [x - factor * y for x, y in zip(a[r], a[col])]
+    return [row[4:] for row in a]
+
+
 class MeshService:
     """Mesh data extraction service."""
 
@@ -382,6 +403,334 @@ class MeshService:
         return result["data"]
 
     # ------------------------------------------------------------------ #
+    #  Internal: read MatrixVP from VS cb ($Globals), invert to VP^-1     #
+    # ------------------------------------------------------------------ #
+    def _read_matrix_vp(self, controller, event_id):
+        """Locate hlslcc_mtx4x4unity_MatrixVP in a VS constant block and return it.
+
+        CRITICAL: in OpenGL the VS $Globals block is a non-UBO loose-uniform
+        "default block" (buffer_backed=False, byte_size=0). GetBufferData by byte
+        offset CANNOT read it -- it misreads adjacent UBOs (cb0 ObjectToWorld). The
+        only correct accessor is controller.GetCBufferVariableContents, the same API
+        the get_cbuffer_contents tool uses. We mirror pipeline_service._get_cbuffer_info.
+
+        Returns (vp_cols, diag): vp_cols is a list of 4 float4s. For hlslcc these are
+        the COLUMNS of the matrix M where clip = M @ world (verified empirically: the
+        w-component of cols 0..2 equals the camera forward vector). export_postvs_to_file
+        rebuilds M as M[r][c] = vp_cols[c][r], then inverts. Or (None, diag) on failure.
+        """
+        diag = {}
+        pipe = controller.GetPipelineState()
+        stage = rd.ShaderStage.Vertex
+        refl = pipe.GetShaderReflection(stage)
+        if not refl:
+            diag["error"] = "no VS reflection"
+            return None, diag
+
+        shader_id = refl.resourceId
+        try:
+            entry = pipe.GetShaderEntryPoint(stage)
+        except Exception:
+            entry = getattr(refl, "entryPoint", "")
+        try:
+            pipe_obj = pipe.GetGraphicsPipelineObject()
+        except Exception:
+            pipe_obj = rd.ResourceId.Null()
+
+        blocks = list(getattr(refl, "constantBlocks", []) or [])
+        diag["blocks"] = [getattr(b, "name", "") for b in blocks]
+
+        def _find_matrixvp(vars_list):
+            """Recursively locate the variable whose name contains 'MatrixVP'."""
+            for v in vars_list:
+                nm = getattr(v, "name", "") or ""
+                if "MatrixVP" in nm:
+                    return v
+                mem = getattr(v, "members", None)
+                if mem:
+                    found = _find_matrixvp(list(mem))
+                    if found is not None:
+                        return found
+            return None
+
+        def _extract_4x4(var):
+            """Pull 4 float4s out of a MatrixVP variable (member array or flat 16)."""
+            members = list(getattr(var, "members", []) or [])
+            if len(members) >= 4:
+                rows = []
+                for m in members[:4]:
+                    try:
+                        rows.append([float(x) for x in m.value.f32v[:4]])
+                    except Exception:
+                        return None
+                return rows
+            # No members: the variable itself may carry 16 floats (4x4 matrix var).
+            try:
+                flat = [float(x) for x in var.value.f32v[:16]]
+                if len(flat) >= 16:
+                    return [flat[i * 4:i * 4 + 4] for i in range(4)]
+            except Exception:
+                pass
+            return None
+
+        attempts = []
+        for i, blk in enumerate(blocks):
+            try:
+                used = pipe.GetConstantBlock(stage, i, 0)
+                desc = used.descriptor
+                buf_id = desc.resource
+                variables = controller.GetCBufferVariableContents(
+                    pipe_obj,
+                    shader_id,
+                    stage,
+                    entry,
+                    i,
+                    buf_id,
+                    getattr(desc, "byteOffset", 0),
+                    getattr(desc, "byteSize", 0),
+                )
+            except Exception as e:
+                attempts.append((i, "GetCBufferVariableContents err: %s" % e))
+                continue
+
+            target = _find_matrixvp(list(variables or []))
+            if target is None:
+                continue
+            cols = _extract_4x4(target)
+            if cols is None:
+                attempts.append((i, "found MatrixVP but could not read 16 floats"))
+                continue
+            diag["block_index"] = i
+            diag["block_name"] = getattr(blk, "name", "")
+            diag["var_name"] = getattr(target, "name", "")
+            diag["matrix_vp_raw"] = [x for row in cols for x in row]
+            return cols, diag
+
+        diag["error"] = "MatrixVP not found via GetCBufferVariableContents"
+        diag["attempts"] = attempts
+        return None, diag
+
+    # ------------------------------------------------------------------ #
+    #  Internal: PostVS (post-vertex-shader / skinned) data extraction    #
+    # ------------------------------------------------------------------ #
+    def _extract_postvs(self, controller, event_id, instance=0, view=0):
+        """Read VS-output (post-transform, post-skinning) vertices for a draw.
+
+        Returns (data_dict, error). data_dict has indices + per-vertex clip-space
+        SV_Position (and any float varyings). The heavy lifting of clip->world is
+        done by the caller using VP^-1.
+        """
+        try:
+            controller.SetFrameEvent(int(event_id), True)
+        except Exception as e:
+            return None, "SetFrameEvent failed: %s" % e
+
+        action = self.ctx.GetAction(int(event_id))
+        if action is None:
+            return None, "No action at event_id=%d" % event_id
+
+        try:
+            postvs = controller.GetPostVSData(int(instance), int(view),
+                                              rd.MeshDataStage.VSOut)
+        except Exception as e:
+            return None, "GetPostVSData failed: %s" % e
+
+        vtx_rid = getattr(postvs, "vertexResourceId", None)
+        if vtx_rid is None or vtx_rid == rd.ResourceId.Null():
+            return None, "PostVS has no vertex data (vertexResourceId null)"
+
+        vtx_stride = int(getattr(postvs, "vertexByteStride", 0))
+        vtx_off = int(getattr(postvs, "vertexByteOffset", 0))
+        disp_indices = int(getattr(postvs, "numIndices", 0))
+        if disp_indices <= 0 or vtx_stride <= 0:
+            return None, "PostVS empty (numIndices=%d stride=%d)" % (disp_indices, vtx_stride)
+
+        # The PostVS format describes the first element (usually SV_Position float4).
+        fmt = getattr(postvs, "format", None)
+        pos_comp = getattr(fmt, "compCount", 4) if fmt else 4
+
+        # ---- Read the PostVS index buffer FIRST. For an indexed draw the PostVS
+        # vertex buffer holds only the UNIQUE post-transform vertices, indexed by
+        # this IB; numIndices is the *display* index count (16962 here), NOT the
+        # unique vertex count. Using it to size the VB read overruns the buffer.
+        idx_rid = getattr(postvs, "indexResourceId", None)
+        idx_stride = int(getattr(postvs, "indexByteStride", 0))
+        idx_off = int(getattr(postvs, "indexByteOffset", 0))
+        base_vtx = int(getattr(postvs, "baseVertex", 0))
+        indices = []
+        has_ib = (idx_rid is not None and idx_rid != rd.ResourceId.Null()
+                  and idx_stride > 0)
+        if has_ib:
+            try:
+                iraw = controller.GetBufferData(idx_rid, idx_off,
+                                                disp_indices * idx_stride)
+                cnt = len(iraw) // idx_stride
+                if idx_stride == 2:
+                    indices = list(struct.unpack_from("<%dH" % cnt, iraw, 0))
+                else:
+                    indices = list(struct.unpack_from("<%dI" % cnt, iraw, 0))
+                if base_vtx:
+                    indices = [ix + base_vtx for ix in indices]
+            except Exception:
+                indices = []
+
+        # Derive the unique-vertex count: max index + 1 for indexed draws,
+        # otherwise the display count (non-indexed: verts already expanded).
+        if indices:
+            num_verts = max(indices) + 1
+        else:
+            num_verts = disp_indices
+
+        # Read the VB, then clamp to what the buffer actually contains so a stale
+        # estimate can never overrun struct.unpack_from.
+        try:
+            vbytes = controller.GetBufferData(vtx_rid, vtx_off,
+                                              num_verts * vtx_stride)
+        except Exception as e:
+            return None, "GetBufferData(PostVS vtx) failed: %s" % e
+        avail = len(vbytes) // vtx_stride
+        if avail < num_verts:
+            num_verts = avail
+        if num_verts <= 0:
+            return None, "PostVS VB empty after read (bytes=%d stride=%d)" % (
+                len(vbytes), vtx_stride)
+
+        # Decode SV_Position (clip space) as the first compCount floats per vertex.
+        positions = []
+        for i in range(num_verts):
+            base = i * vtx_stride
+            comps = struct.unpack_from("<%df" % pos_comp, vbytes, base)
+            if len(comps) < 4:
+                comps = tuple(comps) + (1.0,) * (4 - len(comps))
+            positions.append(list(comps[:4]))
+
+        # Drop indices that fall outside the decoded vertex range (safety).
+        if indices:
+            indices = [ix for ix in indices if 0 <= ix < num_verts]
+        else:
+            indices = list(range(num_verts))
+
+        return {
+            "num_vertices": num_verts,
+            "num_indices": len(indices),
+            "indices": indices,
+            "clip_positions": positions,
+            "_diag": {
+                "vtx_resource": str(vtx_rid),
+                "vtx_stride": vtx_stride,
+                "pos_comp": pos_comp,
+                "disp_indices": disp_indices,
+                "has_postvs_ib": has_ib,
+            },
+        }, None
+
+    # ------------------------------------------------------------------ #
+    #  Public: export PostVS (skinned) world-space mesh to JSON           #
+    # ------------------------------------------------------------------ #
+    def export_postvs_to_file(self, event_id, output_path, instance=0, view=0):
+        """Extract VS-output (skinned, post-transform) vertices and write world-space JSON.
+
+        For SKINNED meshes the input VB holds bind-pose vertices; the GPU skins them
+        in the VS. RenderDoc captures the VS OUTPUT (PostVS) — the actual on-screen
+        geometry. SV_Position is in CLIP space; we invert MatrixVP (clip = VP @ world)
+        to recover WORLD-space positions that match the captured frame exactly.
+
+        The output JSON matches export_mesh_to_file's schema (num_indices,
+        num_vertices, indices, position) so RDCMeshBuilder can consume it directly.
+        position is WORLD space (place the GameObject at Transform origin; align the
+        RDC camera with absolute coords). No normals/uv (clip-only fast path).
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+          try:
+            pv, err = self._extract_postvs(controller, event_id, instance, view)
+            if err:
+                result["error"] = err
+                return
+            vp_rows, vpdiag = self._read_matrix_vp(controller, event_id)
+            if vp_rows is None:
+                result["error"] = "MatrixVP read failed: %s | %s" % (
+                    vpdiag.get("error", "?"), vpdiag)
+                return
+
+            # hlslcc stores the 4 float4s as COLUMNS of M where clip = M @ world.
+            # Build M (row-major 4x4) then invert.
+            cols = vp_rows  # each cols[i] is a column
+            M = [[cols[c][r] for c in range(4)] for r in range(4)]
+            Minv = _invert4x4(M)
+            if Minv is None:
+                result["error"] = "MatrixVP not invertible"
+                return
+
+            clip = pv["clip_positions"]
+            out_pos = []
+            bad = 0
+            for cp in clip:
+                # world = Minv @ clip (homogeneous), then divide by w.
+                wx = Minv[0][0]*cp[0]+Minv[0][1]*cp[1]+Minv[0][2]*cp[2]+Minv[0][3]*cp[3]
+                wy = Minv[1][0]*cp[0]+Minv[1][1]*cp[1]+Minv[1][2]*cp[2]+Minv[1][3]*cp[3]
+                wz = Minv[2][0]*cp[0]+Minv[2][1]*cp[1]+Minv[2][2]*cp[2]+Minv[2][3]*cp[3]
+                ww = Minv[3][0]*cp[0]+Minv[3][1]*cp[1]+Minv[3][2]*cp[2]+Minv[3][3]*cp[3]
+                if abs(ww) < 1e-12:
+                    bad += 1
+                    out_pos.append([0.0, 0.0, 0.0])
+                else:
+                    out_pos.append([wx/ww, wy/ww, wz/ww])
+
+            raw_json = {
+                "event_id": event_id,
+                "baked_world": True,
+                "source": "postvs",
+                "num_indices": pv["num_indices"],
+                "num_vertices": pv["num_vertices"],
+                "indices": pv["indices"],
+                "position": out_pos,
+            }
+            try:
+                out_dir = os.path.dirname(output_path)
+                if out_dir and not os.path.isdir(out_dir):
+                    os.makedirs(out_dir)
+                with open(output_path, "w", encoding="utf-8") as fh:
+                    json.dump(raw_json, fh)
+            except Exception as e:
+                result["error"] = "write failed: %s" % e
+                return
+
+            def rng(arr, comp):
+                if not arr:
+                    return None
+                return [min(r[comp] for r in arr), max(r[comp] for r in arr)]
+
+            result["data"] = {
+                "event_id": event_id,
+                "output_path": output_path,
+                "source": "postvs",
+                "baked_world": True,
+                "num_indices": pv["num_indices"],
+                "num_vertices": pv["num_vertices"],
+                "degenerate_w": bad,
+                "position_bounds": {
+                    "x": rng(out_pos, 0), "y": rng(out_pos, 1), "z": rng(out_pos, 2)
+                },
+                "matrix_vp_raw": vpdiag.get("matrix_vp_raw"),
+                "_postvs_diag": pv.get("_diag"),
+                "_vp_diag": {k: v for k, v in vpdiag.items() if k != "matrix_vp_raw"},
+            }
+          except Exception as e:
+            import traceback
+            result["error"] = "export_postvs_to_file error: %s\n%s" % (
+                str(e), traceback.format_exc())
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    # ------------------------------------------------------------------ #
     #  Public: extract mesh, optionally bake to world, write JSON to disk #
     # ------------------------------------------------------------------ #
     def export_mesh_to_file(self, event_id, output_path, bake_world=True,
@@ -408,27 +757,62 @@ class MeshService:
         result = {"data": None, "error": None}
 
         def callback(controller):
+          try:
             data, err = self._extract(controller, event_id)
             if err:
                 result["error"] = err
                 return
 
-            attrs_by_slot = {a["vertex_buffer_slot"]: a for a in data["attributes"]}
+            # A single VB slot may carry multiple interleaved semantics (e.g. NSH
+            # packs POSITION@0 / NORMAL@12 / TANGENT@20 all in slot 0), and the
+            # caller's slot params assume one-semantic-per-slot. When attribute
+            # names carry real semantics (GL hlslcc: in_POSITION0/in_NORMAL0/...)
+            # resolve by name; only fall back to slot indexing for the DXBC/ANGLE
+            # case where every attribute is generically named TEXCOORDn.
+            slot_attrs = {}
+            for a in data["attributes"]:
+                slot_attrs.setdefault(a["vertex_buffer_slot"], []).append(a)
+            attrs_by_name = {(a.get("name") or "").upper(): a for a in data["attributes"]}
 
-            def vals(slot):
-                a = attrs_by_slot.get(slot)
+            def by_name(keyword):
+                if not keyword:
+                    return None
+                for nm, a in attrs_by_name.items():
+                    if keyword in nm:
+                        return a
+                return None
+
+            has_named_semantics = any(
+                tok in nm for nm in attrs_by_name
+                for tok in ("POSITION", "NORMAL", "TANGENT")
+            )
+
+            def by_slot(slot):
+                here = slot_attrs.get(slot)
+                return here[0] if here else None
+
+            def resolve(slot, name_keyword):
+                if has_named_semantics:
+                    a = by_name(name_keyword)
+                    if a is not None:
+                        return a
+                    # name mode but this role has no match (e.g. no UV1) -> absent
+                    return None
+                return by_slot(slot)
+
+            def vals_of(a):
                 return a["values"] if a else None
 
-            pos = vals(pos_slot)
-            nrm = vals(normal_slot)
-            tan = vals(tangent_slot)
-            uv0 = vals(uv0_slot)
-            uv1 = vals(uv1_slot)
-            extra = vals(extra_slot)
+            pos = vals_of(resolve(pos_slot, "POSITION"))
+            nrm = vals_of(resolve(normal_slot, "NORMAL"))
+            tan = vals_of(resolve(tangent_slot, "TANGENT"))
+            uv0 = vals_of(resolve(uv0_slot, "TEXCOORD0"))
+            uv1 = vals_of(resolve(uv1_slot, "TEXCOORD1"))
+            extra = vals_of(resolve(extra_slot, None))
 
             if pos is None:
-                result["error"] = "no POSITION at slot %d (slots=%s)" % (
-                    pos_slot, sorted(attrs_by_slot))
+                result["error"] = "no POSITION at slot %d (slots=%s, names=%s)" % (
+                    pos_slot, sorted(slot_attrs), sorted(attrs_by_name))
                 return
 
             o2w = w2o = None
@@ -523,9 +907,15 @@ class MeshService:
                     "position": pos_slot, "normal": normal_slot, "tangent": tangent_slot,
                     "uv0": uv0_slot, "uv1": uv1_slot, "extra": extra_slot,
                 },
-                "available_slots": sorted(attrs_by_slot),
+                "available_slots": sorted(slot_attrs),
+                "attribute_names": sorted(attrs_by_name),
+                "resolved_by": "name" if has_named_semantics else "slot",
                 "_matrix_diag": mdiag,
             }
+          except Exception as e:
+            import traceback
+            result["error"] = "export_mesh_to_file error: %s\n%s" % (
+                str(e), traceback.format_exc())
 
         self._invoke(callback)
         if result["error"]:

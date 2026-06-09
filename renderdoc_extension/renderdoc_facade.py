@@ -303,3 +303,7 @@ class RenderDocFacade:
             uv0_slot, uv1_slot, extra_slot,
             o2w_offset, w2o_offset,
         )
+
+    def export_postvs_to_file(self, event_id, output_path, instance=0, view=0):
+        """Extract VS-output (skinned) world-space vertices, write JSON to disk"""
+        return self._mesh.export_postvs_to_file(event_id, output_path, instance, view)

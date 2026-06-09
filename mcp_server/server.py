@@ -909,6 +909,51 @@ def export_mesh_to_file(
 
 
 @mcp.tool
+def export_postvs_to_file(
+    event_id: int,
+    output_path: str,
+    instance: int = 0,
+    view: int = 0,
+) -> dict:
+    """
+    Extract VS-OUTPUT (post-skinning / post-transform) vertices for a draw and write
+    WORLD-space JSON to disk, returning only small metadata.
+
+    USE THIS FOR SKINNED MESHES. export_mesh_to_file reads the INPUT vertex buffer,
+    which for a skinned character holds BIND-POSE (T-pose-ish) vertices — they do NOT
+    match the animated pose seen in the captured frame. RenderDoc also captures the VS
+    OUTPUT (the "PostVS" / VSOut stage): the actual on-screen, skinned geometry.
+
+    SV_Position in PostVS is CLIP space. This tool reads MatrixVP from the VS constant
+    buffer ($Globals / UnityPerFrame), inverts it (clip = VP @ world), and recovers
+    WORLD-space positions — so the result lines up pixel-accurately with the frame and
+    with an RDC-absolute-positioned camera.
+
+    Output JSON matches export_mesh_to_file's schema (num_indices, num_vertices,
+    indices, position) so RDCMeshBuilder consumes it directly. position is WORLD space:
+    place the GameObject at Transform origin (identity), and align the RDC camera using
+    absolute world coords. NOTE: this fast path writes POSITION + INDICES only (no
+    normals/uv yet); normals can be recomputed in Unity, and UVs taken from the
+    bind-pose export if needed.
+
+    Args:
+        event_id: The draw call event ID (a skinned mesh draw).
+        output_path: Absolute path on the RenderDoc host to write the JSON to.
+        instance: Instance index for instanced draws (default 0).
+        view: Multiview index (default 0).
+
+    Returns metadata: output_path, counts, world-space position bounds, the MatrixVP
+    used, and diagnostics.
+    """
+    return bridge.call("export_postvs_to_file", {
+        "event_id": event_id,
+        "output_path": output_path,
+        "instance": instance,
+        "view": view,
+    })
+
+
+@mcp.tool
 def list_captures(directory: str) -> dict:
     """
     List all RenderDoc capture files (.rdc) in the specified directory.
