@@ -189,7 +189,7 @@ uv tool update-shell  # 添加到 PATH
 
 ## 使用方法
 
-1. 启动 RenderDoc，并打开捕获文件 (.rdc)，或用 `capture_frame` 启动程序并自动抓帧
+1. 启动 RenderDoc，并打开捕获文件 (.rdc)，或用 `capture_frame` / `launch_application` 启动程序并抓帧
 2. 从 MCP 客户端（如 Claude）访问 RenderDoc 数据
 
 ## MCP 工具列表
@@ -240,6 +240,10 @@ uv tool update-shell  # 添加到 PATH
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
 | `capture_frame` | 通过 RenderDoc 启动目标程序，等待若干帧后抓取一帧并自动打开 |
+| `launch_application` | 通过 RenderDoc 启动目标程序并保留 target control 会话 |
+| `get_target_status` | 查询 `launch_application` 启动的目标程序是否仍可控 |
+| `trigger_capture` | 对已启动目标程序触发一次截帧并保存 .rdc |
+| `close_target` | 关闭 target control 会话并释放 RenderDoc/MCP 内部状态 |
 | `launch_renderdoc` | 启动 qrenderdoc 并打开 .rdc，等待 MCP Bridge ready |
 
 ## 使用示例
@@ -375,8 +379,31 @@ capture_frame(
     timeout_seconds=60)
 ```
 
-> `capture_frame` 需要 qrenderdoc 中已经加载 MCP Bridge，并依赖当前 RenderDoc Python 绑定暴露
+> `capture_frame` / `launch_application` 需要 qrenderdoc 中已经加载 MCP Bridge，并依赖当前 RenderDoc Python 绑定暴露
 > `ExecuteAndInject` / `CreateTargetControl` 或对应 `RENDERDOC_*` 接口。
+
+### 启动模拟器并按需截帧
+
+```
+launch = launch_application(
+    exe_path="D:\\MuMuPlayer-12.0\\shell\\MuMuPlayer.exe",
+    working_dir="D:\\MuMuPlayer-12.0\\shell",
+    cmd_line="",
+    graphics_api="vulkan")
+
+# 返回 {"session_id": "...", "pid": 12345, ...}
+get_target_status(session_id=launch["session_id"])
+
+trigger_capture(
+    session_id=launch["session_id"],
+    output_path="D:\\captures\\mumu12_frame.rdc",
+    timeout_seconds=60)
+
+close_target(session_id=launch["session_id"])
+```
+
+> `graphics_api` 支持 `auto`、`vulkan`、`d3d11`、`d3d12`、`opengl`、`gles`。
+> 它用于 RenderDoc 启动环境设置；目标程序最终创建哪个图形 API 仍由目标程序自身决定。
 
 ### 提取 Draw 的几何数据
 

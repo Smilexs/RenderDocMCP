@@ -100,6 +100,10 @@ RenderDocMCP/
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
 | `capture_frame` | 通过 RenderDoc 启动目标程序，等待若干帧后抓取一帧并自动打开 |
+| `launch_application` | 通过 RenderDoc 启动目标程序并保留 target control 会话 |
+| `get_target_status` | 查询 `launch_application` 启动的目标程序是否仍可控 |
+| `trigger_capture` | 对已启动目标程序触发一次截帧并保存 .rdc |
+| `close_target` | 关闭 target control 会话并释放 RenderDoc/MCP 内部状态 |
 | `launch_renderdoc` | 启动 qrenderdoc 并打开 .rdc，等待 MCP Bridge ready |
 
 ### get_draw_calls 过滤选项
@@ -135,6 +139,19 @@ capture_frame(
     delay_frames=100,
     output_path="D:\\captures\\game_auto.rdc",
     timeout_seconds=60)
+
+# 启动并保留可控会话，适合 MuMu12 等需要多次按需截帧的目标
+launch = launch_application(
+    exe_path="D:\\MuMuPlayer-12.0\\shell\\MuMuPlayer.exe",
+    working_dir="D:\\MuMuPlayer-12.0\\shell",
+    cmd_line="",
+    graphics_api="vulkan")
+get_target_status(session_id=launch["session_id"])
+trigger_capture(
+    session_id=launch["session_id"],
+    output_path="D:\\captures\\mumu12_frame.rdc",
+    timeout_seconds=60)
+close_target(session_id=launch["session_id"])
 ```
 
 ### 反向搜索工具
@@ -268,7 +285,7 @@ RenderDoc 在启动时把扩展模块 import 进内存；**只拷贝文件 / 改
 - **大二进制别走 inline**：纹理用 `export_texture_to_file`、大模型用 `export_mesh_to_file`，
   宿主侧落盘只回传元信息。`get_texture_data` / `get_mesh_data` 的 base64 会经过对话上下文，
   1024² 贴图或大网格单次即溢出窗口（`get_mesh_data` 会 `Expecting ',' delimiter` 截断报错）。
-- **`capture_frame` 前提**：需要 qrenderdoc 已加载 MCP Bridge，并依赖当前 RenderDoc Python 绑定暴露
+- **`capture_frame` / `launch_application` 前提**：需要 qrenderdoc 已加载 MCP Bridge，并依赖当前 RenderDoc Python 绑定暴露
   `ExecuteAndInject` / `CreateTargetControl` 或对应 `RENDERDOC_*` 接口；若绑定不暴露这些入口，该工具会直接返回不可用错误。
 
 ### 已修复记录
@@ -278,7 +295,7 @@ RenderDoc 在启动时把扩展模块 import 进内存；**只拷贝文件 / 改
   `pipe.GetConstantBlock(stage, i, 0)` 返回 `UsedDescriptor`（取代不存在的 `GetConstantBuffer`），
   入口点用 `pipe.GetShaderEntryPoint(stage)`。
 - **Pass/CBuffer/Shader/Resource/Capture 扩展（2026-06）**：同步移植了 Pass 结构分析、独立 CBuffer 读取、
-  Shader 全局索引与搜索、Resource 详情/使用历史，以及 `capture_frame` 实时启动抓帧接口。
+  Shader 全局索引与搜索、Resource 详情/使用历史，以及 `capture_frame` / `launch_application` 实时启动抓帧接口。
 
 ## 参考链接
 

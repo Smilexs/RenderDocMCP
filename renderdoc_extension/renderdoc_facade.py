@@ -71,6 +71,25 @@ class RenderDocFacade:
             output_path, timeout_seconds,
         )
 
+    def launch_application(self, exe_path, working_dir="", cmd_line="",
+                           graphics_api="auto"):
+        """Launch a target app through RenderDoc and keep TargetControl open"""
+        return self._capture.launch_application(
+            exe_path, working_dir, cmd_line, graphics_api)
+
+    def get_target_status(self, session_id):
+        """Check whether a launched target session is still controllable"""
+        return self._capture.get_target_status(session_id)
+
+    def trigger_capture(self, session_id, output_path="", timeout_seconds=60):
+        """Trigger a capture on a launched target session and save it"""
+        return self._capture.trigger_capture(
+            session_id, output_path, timeout_seconds)
+
+    def close_target(self, session_id):
+        """Close a launched target session"""
+        return self._capture.close_target(session_id)
+
     # ==================== Draw Call / Action Operations ====================
 
     def get_draw_calls(

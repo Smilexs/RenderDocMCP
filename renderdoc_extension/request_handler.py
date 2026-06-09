@@ -44,6 +44,10 @@ class RequestHandler:
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
             "capture_frame": self._handle_capture_frame,
+            "launch_application": self._handle_launch_application,
+            "get_target_status": self._handle_get_target_status,
+            "trigger_capture": self._handle_trigger_capture,
+            "close_target": self._handle_close_target,
             "get_resource_info": self._handle_get_resource_info,
             "get_resource_usage": self._handle_get_resource_usage,
             "list_cbuffers": self._handle_list_cbuffers,
@@ -455,6 +459,43 @@ class RequestHandler:
             params.get("output_path", params.get("outputPath", "")),
             int(params.get("timeout_seconds", params.get("timeoutSeconds", 60))),
         )
+
+    def _handle_launch_application(self, params):
+        """Handle launch_application request"""
+        exe_path = params.get("exe_path", params.get("exePath"))
+        if not exe_path:
+            raise ValueError("exe_path is required")
+        return self.facade.launch_application(
+            exe_path,
+            params.get("working_dir", params.get("workingDir", "")),
+            params.get("cmd_line", params.get("cmdLine", "")),
+            params.get("graphics_api", params.get("graphicsApi", "auto")),
+        )
+
+    def _handle_get_target_status(self, params):
+        """Handle get_target_status request"""
+        session_id = params.get("session_id", params.get("sessionId"))
+        if not session_id:
+            raise ValueError("session_id is required")
+        return self.facade.get_target_status(session_id)
+
+    def _handle_trigger_capture(self, params):
+        """Handle trigger_capture request"""
+        session_id = params.get("session_id", params.get("sessionId"))
+        if not session_id:
+            raise ValueError("session_id is required")
+        return self.facade.trigger_capture(
+            session_id,
+            params.get("output_path", params.get("outputPath", "")),
+            int(params.get("timeout_seconds", params.get("timeoutSeconds", 60))),
+        )
+
+    def _handle_close_target(self, params):
+        """Handle close_target request"""
+        session_id = params.get("session_id", params.get("sessionId"))
+        if not session_id:
+            raise ValueError("session_id is required")
+        return self.facade.close_target(session_id)
 
     def _handle_list_passes(self, params):
         """Handle list_passes request"""

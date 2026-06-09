@@ -973,6 +973,94 @@ def capture_frame(
 
 
 @mcp.tool
+def launch_application(
+    exe_path: str,
+    working_dir: str = "",
+    cmd_line: str = "",
+    graphics_api: Literal["auto", "vulkan", "d3d11", "d3d12", "opengl", "gles"] = "auto",
+) -> dict:
+    """
+    Launch an application through RenderDoc and keep its target control session open.
+
+    Args:
+        exe_path: Absolute path to the executable to launch, e.g. MuMu12's emulator exe
+        working_dir: Optional working directory; defaults to the executable folder
+        cmd_line: Optional command-line arguments for the target process
+        graphics_api: API hint for launch environment setup. Use auto, vulkan,
+            d3d11, d3d12, opengl, or gles. The target process still decides which
+            graphics API it actually creates.
+
+    Returns a session_id and pid. Use the session_id with get_target_status,
+    trigger_capture, and close_target.
+    """
+    return bridge.call(
+        "launch_application",
+        {
+            "exe_path": exe_path,
+            "working_dir": working_dir,
+            "cmd_line": cmd_line,
+            "graphics_api": graphics_api,
+        },
+        timeout=90.0,
+    )
+
+
+@mcp.tool
+def get_target_status(session_id: str) -> dict:
+    """
+    Check whether a RenderDoc-launched target session is still controllable.
+
+    Args:
+        session_id: Session ID returned by launch_application
+    """
+    return bridge.call(
+        "get_target_status",
+        {"session_id": session_id},
+        timeout=10.0,
+    )
+
+
+@mcp.tool
+def trigger_capture(
+    session_id: str,
+    output_path: str = "",
+    timeout_seconds: int = 60,
+) -> dict:
+    """
+    Trigger one capture on a previously launched target session and save it.
+
+    Args:
+        session_id: Session ID returned by launch_application
+        output_path: Optional .rdc path to write; defaults to a temp capture path
+        timeout_seconds: Seconds to wait for capture completion
+    """
+    return bridge.call(
+        "trigger_capture",
+        {
+            "session_id": session_id,
+            "output_path": output_path,
+            "timeout_seconds": timeout_seconds,
+        },
+        timeout=float(timeout_seconds) + 120.0,
+    )
+
+
+@mcp.tool
+def close_target(session_id: str) -> dict:
+    """
+    Close a RenderDoc target control session created by launch_application.
+
+    Args:
+        session_id: Session ID returned by launch_application
+    """
+    return bridge.call(
+        "close_target",
+        {"session_id": session_id},
+        timeout=10.0,
+    )
+
+
+@mcp.tool
 def launch_renderdoc(capture_path: str, renderdoc_path: str = "") -> dict:
     """
     Launch qrenderdoc with a capture file and wait for the MCP bridge to respond.
