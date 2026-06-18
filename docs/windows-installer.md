@@ -1,39 +1,51 @@
-# Windows Installer
+# Windows 安装包
 
-This project can be released as a per-user Windows installer:
+本项目可以发布为 Windows 用户级安装包。构建脚本会先用 PyInstaller 打包
+`renderdoc-mcp.exe`，再用 Inno Setup 生成安装程序：
 
 ```powershell
 .\packaging\windows\build.ps1
 ```
 
-The build emits:
+构建成功后会输出：
 
 ```text
 dist\windows\RenderDocMCP-Setup-<version>.exe
 ```
 
-## Prerequisites
+## 构建依赖
 
 - Windows 10/11
 - Python 3.10+
 - uv
-- Inno Setup 6 (`ISCC.exe` on PATH, or pass `-InnoSetupCompiler`)
+- Inno Setup 6
 
-PyInstaller is pulled by the build script with `uv run --with pyinstaller`, so it does not need to be installed globally.
+`ISCC.exe` 需要能被 PATH 找到；如果没有加入 PATH，也可以在构建时通过
+`-InnoSetupCompiler` 显式传入路径：
 
-## What the Installer Does
+```powershell
+.\packaging\windows\build.ps1 -InnoSetupCompiler "C:\Users\<用户名>\AppData\Local\Programs\Inno Setup 6\ISCC.exe"
+```
 
-- Installs `renderdoc-mcp.exe` to `%LOCALAPPDATA%\RenderDocMCP`.
-- Copies the RenderDoc extension payload into the app install directory.
-- Runs `install_renderdoc_extension.ps1` to install the extension into `%APPDATA%\qrenderdoc\extensions\renderdoc_mcp_bridge`.
-- Updates `%APPDATA%\qrenderdoc\UI.config` so `renderdoc_mcp_bridge` is listed in `AlwaysLoad_Extensions`.
-- Creates Start Menu shortcuts for launching the MCP server manually and reinstalling the extension.
+PyInstaller 不需要全局安装。构建脚本会通过
+`uv run --with pyinstaller` 临时拉取并运行 PyInstaller。
 
-The MCP server uses stdio, so normal MCP clients should launch `renderdoc-mcp.exe` themselves. The Start Menu shortcut is mainly for diagnostics.
+## 安装器会做什么
 
-## MCP Client Configuration
+- 将 `renderdoc-mcp.exe` 安装到 `%LOCALAPPDATA%\RenderDocMCP`。
+- 将 RenderDoc 扩展文件复制到安装目录内，作为后续安装扩展的源文件。
+- 运行 `install_renderdoc_extension.ps1`，把扩展安装到
+  `%APPDATA%\qrenderdoc\extensions\renderdoc_mcp_bridge`。
+- 更新 `%APPDATA%\qrenderdoc\UI.config`，把 `renderdoc_mcp_bridge` 加入
+  `AlwaysLoad_Extensions`。
+- 创建开始菜单快捷方式，用于手动启动 MCP Server 或重新安装 RenderDoc 扩展。
 
-After installation, configure MCP clients with the installed executable path:
+MCP Server 使用 stdio 通信。正常使用时，应由 Claude、Codex 等 MCP 客户端
+自动启动 `renderdoc-mcp.exe`；开始菜单里的启动项主要用于诊断和手动测试。
+
+## MCP 客户端配置
+
+安装完成后，可以把 MCP 客户端配置为调用安装后的可执行文件：
 
 ```json
 {
@@ -45,12 +57,23 @@ After installation, configure MCP clients with the installed executable path:
 }
 ```
 
-If the client does not expand environment variables in `command`, use the absolute expanded path.
+如果客户端不会展开 `command` 里的环境变量，请改用展开后的绝对路径，例如：
 
-## Updating
+```json
+{
+  "mcpServers": {
+    "renderdoc": {
+      "command": "C:\\Users\\<用户名>\\AppData\\Local\\RenderDocMCP\\renderdoc-mcp.exe"
+    }
+  }
+}
+```
 
-To update, download and run the new `RenderDocMCP-Setup-<version>.exe`.
+## 更新
 
-- If only the MCP server changed, restart the MCP client.
-- If `renderdoc_extension` changed, restart RenderDoc.
-- If files are locked, close Claude/Codex/other MCP clients and RenderDoc, then rerun the installer.
+更新时下载并运行新的 `RenderDocMCP-Setup-<version>.exe` 即可。
+
+- 如果只更新了 MCP Server，重启 MCP 客户端即可。
+- 如果更新了 `renderdoc_extension`，需要重启 RenderDoc。
+- 如果安装器提示文件被占用，先关闭 Claude、Codex、其他 MCP 客户端和 RenderDoc，
+  然后重新运行安装器。

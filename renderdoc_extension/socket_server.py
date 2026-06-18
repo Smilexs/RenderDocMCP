@@ -18,11 +18,61 @@ RESPONSE_FILE = os.path.join(IPC_DIR, "response.json")
 LOCK_FILE = os.path.join(IPC_DIR, "lock")
 
 
+try:
+    from PySide2 import QtCore, QtWidgets
+except Exception:
+    QtCore = None
+    QtWidgets = None
+
+
+if QtCore is not None:
+    class QtMainThreadDispatcher(QtCore.QObject):
+        run_signal = QtCore.Signal(object)
+
+        def __init__(self):
+            super(QtMainThreadDispatcher, self).__init__()
+            self.run_signal.connect(self._run, QtCore.Qt.QueuedConnection)
+
+        def call(self, fn, *args, **kwargs):
+            app = QtWidgets.QApplication.instance() if QtWidgets is not None else None
+            if app is not None and QtCore.QThread.currentThread() == app.thread():
+                return fn(*args, **kwargs)
+
+            request = {
+                "fn": fn,
+                "args": args,
+                "kwargs": kwargs,
+                "event": threading.Event(),
+                "result": None,
+                "error": None,
+            }
+            self.run_signal.emit(request)
+            if not request["event"].wait(300.0):
+                raise TimeoutError("Timed out waiting for RenderDoc UI thread")
+            if request["error"] is not None:
+                raise request["error"]
+            return request["result"]
+
+        @QtCore.Slot(object)
+        def _run(self, request):
+            try:
+                request["result"] = request["fn"](*request["args"], **request["kwargs"])
+            except Exception as e:
+                request["error"] = e
+            finally:
+                request["event"].set()
+else:
+    class QtMainThreadDispatcher(object):
+        def call(self, fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+
 class MCPBridgeServer(object):
     """File-based IPC server for MCP bridge communication"""
 
-    def __init__(self, host, port, handler):
+    def __init__(self, host, port, handler, dispatcher=None):
         self.handler = handler
+        self.dispatcher = dispatcher
         self._thread = None
         self._running = False
 
@@ -96,7 +146,10 @@ class MCPBridgeServer(object):
 
             # Process request
             try:
-                response = self.handler.handle(request)
+                if self.dispatcher is not None:
+                    response = self.dispatcher.call(self.handler.handle, request)
+                else:
+                    response = self.handler.handle(request)
             except Exception as e:
                 traceback.print_exc()
                 response = {

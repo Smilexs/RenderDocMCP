@@ -72,10 +72,22 @@ class RenderDocFacade:
         )
 
     def launch_application(self, exe_path, working_dir="", cmd_line="",
-                           graphics_api="auto"):
+                           graphics_api="auto", target_process_name="", connect_target=True):
         """Launch a target app through RenderDoc and keep TargetControl open"""
         return self._capture.launch_application(
-            exe_path, working_dir, cmd_line, graphics_api)
+            exe_path, working_dir, cmd_line, graphics_api,
+            target_process_name=target_process_name,
+            connect_target=connect_target)
+
+    def connect_running_target(self, target_process_name="", graphics_api="auto",
+                               timeout_seconds=60):
+        """Connect TargetControl to an already-running RenderDoc target"""
+        return self._capture.connect_running_target(
+            target_process_name, graphics_api, timeout_seconds)
+
+    def list_running_targets(self):
+        """List active RenderDoc targets visible from localhost"""
+        return self._capture.list_running_targets()
 
     def get_target_status(self, session_id):
         """Check whether a launched target session is still controllable"""

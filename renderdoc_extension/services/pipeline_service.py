@@ -283,44 +283,78 @@ class PipelineService:
                 name_lookup = self._resource_name_lookup(controller)
                 textures = []
 
-                readonly_resources = []
+                # Collect texture entries from shader reflection (correct NAMES,
+                # but their bind points may be degenerate on some APIs — see below).
+                refl_textures = []
                 if reflection:
-                    readonly_resources = list(getattr(reflection, "readOnlyResources", []) or [])
+                    for ro in (getattr(reflection, "readOnlyResources", []) or []):
+                        is_texture = getattr(ro, "isTexture", None)
+                        res_type = str(getattr(ro, "resType", "")).lower()
+                        if is_texture is False:
+                            continue
+                        if is_texture is None and res_type and "texture" not in res_type:
+                            continue
+                        refl_textures.append({
+                            "name": getattr(ro, "name", ""),
+                            "fixed_bind": getattr(ro, "fixedBindNumber", None),
+                        })
 
-                for idx, ro in enumerate(readonly_resources):
-                    is_texture = getattr(ro, "isTexture", None)
-                    res_type = str(getattr(ro, "resType", "")).lower()
-                    if is_texture is False:
-                        continue
-                    if is_texture is None and res_type and "texture" not in res_type:
-                        continue
+                # fixedBindNumber -> shader variable name (used only when reliable).
+                name_map = {}
+                for rt in refl_textures:
+                    fb = rt["fixed_bind"]
+                    if fb is not None:
+                        name_map[fb] = rt["name"]
 
-                    variable_name = getattr(ro, "name", "texture_%d" % idx)
-                    bind_index = getattr(ro, "fixedBindNumber", idx)
-                    rid, rid_int = self._resolve_bound_resource(bindings, bind_index)
-                    binding_source = "pipeline_binding" if rid_int != 0 else ""
-                    if rid_int == 0 and bind_index != idx:
-                        rid, rid_int = self._resolve_bound_resource(bindings, idx)
-                        binding_source = "pipeline_binding" if rid_int != 0 else ""
+                # Detect DEGENERATE reflection bind numbers. On OpenGL captures
+                # RenderDoc reports fixedBindNumber == 0 (or duplicate) for every
+                # sampler, so name<->slot cannot be trusted. The previous code
+                # resolved each reflection entry through fixedBindNumber and thus
+                # collapsed all PS slots onto bindings[0]'s single resourceId.
+                fixed_binds = [rt["fixed_bind"] for rt in refl_textures
+                               if rt["fixed_bind"] is not None]
+                name_mapping_reliable = bool(
+                    refl_textures
+                    and len(fixed_binds) == len(refl_textures)
+                    and len(set(fixed_binds)) == len(refl_textures)
+                )
+
+                # PRIMARY path (all APIs): iterate the actually-bound SRVs using the
+                # same accessor get_pipeline_state/_get_stage_resources uses
+                # (srv.access.index for the slot, srv.descriptor.resource for the
+                # id). This yields the correct DISTINCT resource id per slot on
+                # every API and fixes the OpenGL collapse. Names attach via
+                # fixedBindNumber only when that mapping is reliable; otherwise
+                # they are left blank and an honest warning is emitted (see result).
+                for srv in bindings:
+                    descriptor = getattr(srv, "descriptor", None)
+                    res = getattr(descriptor, "resource", None) if descriptor is not None else None
+                    if res is None or res == rd.ResourceId.Null():
+                        continue
+                    rid_int = self._resource_id_int(res)
                     if rid_int == 0:
-                        for key in (bind_index, idx):
-                            if key in vulkan_descriptors:
-                                rid_int = vulkan_descriptors[key]
-                                binding_source = "vulkan_descriptor_fallback"
-                                break
+                        continue
 
-                    entry = {
-                        "slot": idx,
-                        "binding": bind_index,
-                        "shader_name": variable_name,
-                        "resource_id": str(rid) if rid is not None else str(rid_int) if rid_int else "",
-                        "id": rid_int,
-                        "binding_source": binding_source,
-                    }
+                    access = getattr(srv, "access", None)
+                    slot = getattr(access, "index", None) if access is not None else None
 
                     tex = texture_lookup.get(rid_int)
+                    # Skip non-texture SRVs (e.g. SSBO/uniform buffers) when we have
+                    # texture metadata for the capture; keep otherwise to be safe.
+                    if tex is None and texture_lookup:
+                        continue
+
+                    variable_name = name_map.get(slot, "") if name_mapping_reliable else ""
                     tex_name = name_lookup.get(rid_int, "")
                     fmt_name = ""
+                    entry = {
+                        "slot": slot,
+                        "binding": slot,
+                        "shader_name": variable_name,
+                        "resource_id": str(res),
+                        "id": rid_int,
+                        "binding_source": "pipeline_binding",
+                    }
                     if tex is not None:
                         fmt_name = self._format_name(getattr(tex, "format", ""))
                         entry["resource_id"] = str(tex.resourceId)
@@ -402,13 +436,31 @@ class PipelineService:
                             "role": self._infer_texture_role("", tex_name, fmt_name),
                         })
 
-                result["data"] = {
+                data = {
                     "event_id": event_id,
                     "stage": stage,
                     "shader_resource_id": str(shader),
                     "count": len(textures),
                     "textures": textures,
+                    "name_mapping_reliable": name_mapping_reliable,
                 }
+                if not name_mapping_reliable and refl_textures:
+                    # GL (and similar) report degenerate fixedBindNumbers, so we
+                    # cannot trust slot<->name. Resource IDs above ARE correct;
+                    # only shader_name is withheld. Give the caller the raw
+                    # reflection name list + the authoritative-source hint.
+                    data["shader_names_unordered"] = [
+                        rt["name"] for rt in refl_textures if rt["name"]
+                    ]
+                    data["warning"] = (
+                        "shader_name/slot mapping is UNRELIABLE on this capture "
+                        "(reflection reported degenerate bind numbers, typical of "
+                        "OpenGL). resource_id per slot is correct; for the "
+                        "authoritative sampler->name mapping read the GLSL "
+                        "'UNITY_LOCATION(n) uniform sampler2D _Name;' declarations "
+                        "and verify each exported texture visually."
+                    )
+                result["data"] = data
             except Exception as e:
                 import traceback
                 result["error"] = "get_bound_textures error: %s\n%s" % (

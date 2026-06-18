@@ -210,7 +210,7 @@ class CaptureManager:
 
     def launch_application(self, exe_path, working_dir="", cmd_line="",
                            graphics_api="auto", timeout_seconds=60,
-                           output_path=""):
+                           output_path="", target_process_name="", connect_target=True):
         """
         Launch an application through RenderDoc and keep its TargetControl open.
 
@@ -252,17 +252,37 @@ class CaptureManager:
                 % self._execute_result_message(exec_result))
 
         ident = int(getattr(exec_result, "ident", 0))
-        target = self._connect_target(create_target_control, ident, timeout_seconds)
+        if not self._as_bool(connect_target):
+            return {
+                "session_id": "",
+                "pid": 0,
+                "ident": ident,
+                "exe_path": exe_path,
+                "working_dir": working_dir,
+                "cmd_line": cmd_line or "",
+                "graphics_api": graphics_api,
+                "status": "launched",
+                "controllable": False,
+                "connected": False,
+            }
+
+        target = self._connect_target(
+            create_target_control, ident, timeout_seconds,
+            target_process_name, graphics_api)
         if target is None:
             raise ValueError("Failed to connect to injected target process")
 
         pid = self._get_target_pid(target)
+        target_name = self._get_target_name(target)
+        target_api = self._get_target_api(target)
         session_id = uuid.uuid4().hex
         self._target_sessions[session_id] = {
             "session_id": session_id,
             "target": target,
             "pid": pid,
             "ident": ident,
+            "target_name": target_name,
+            "target_api": target_api,
             "exe_path": exe_path,
             "working_dir": working_dir,
             "cmd_line": cmd_line or "",
@@ -276,6 +296,8 @@ class CaptureManager:
             "session_id": session_id,
             "pid": pid,
             "ident": ident,
+            "target_name": target_name,
+            "target_api": target_api,
             "exe_path": exe_path,
             "working_dir": working_dir,
             "cmd_line": cmd_line or "",
@@ -283,6 +305,119 @@ class CaptureManager:
             "status": "running",
             "controllable": not self._target_disconnected(target),
         }
+
+    def connect_running_target(self, target_process_name="", graphics_api="auto",
+                               timeout_seconds=60):
+        """Connect TargetControl to an already-running RenderDoc target."""
+        create_target_control = self._get_target_control_entrypoint(
+            "connect_running_target")
+        expected_name = (target_process_name or "").strip()
+        expected_api = self._normalize_graphics_api(graphics_api)
+        deadline = time.time() + max(float(timeout_seconds), 5.0)
+        last_targets = []
+
+        while time.time() < deadline:
+            last_targets = []
+            for ident in self._candidate_target_idents(0, expected_name):
+                target = self._connect_target_candidate(create_target_control, ident)
+                if target is None:
+                    continue
+
+                info = self._describe_target(target, ident)
+                last_targets.append(info)
+                if expected_name and not self._target_name_matches(
+                        info.get("target_name", ""), expected_name):
+                    self._shutdown_target(target)
+                    continue
+                if not self._target_api_matches(info.get("target_api", ""), expected_api):
+                    self._shutdown_target(target)
+                    continue
+
+                session_id = uuid.uuid4().hex
+                self._target_sessions[session_id] = {
+                    "session_id": session_id,
+                    "target": target,
+                    "pid": info.get("pid", 0),
+                    "ident": ident,
+                    "target_name": info.get("target_name", ""),
+                    "target_api": info.get("target_api", ""),
+                    "exe_path": info.get("target_name", "") or expected_name,
+                    "working_dir": "",
+                    "cmd_line": "",
+                    "graphics_api": expected_api,
+                    "started_at": time.time(),
+                    "last_capture_path": "",
+                }
+                info.update({
+                    "session_id": session_id,
+                    "status": "running",
+                    "controllable": not self._target_disconnected(target),
+                    "connected": not self._target_disconnected(target),
+                })
+                return info
+
+            time.sleep(1.0)
+
+        raise ValueError(
+            "No running RenderDoc target matched %s with API %s. Visible targets: %s"
+            % (expected_name or "<any>", expected_api, self._format_targets(last_targets)))
+
+    def list_running_targets(self):
+        """List active RenderDoc targets visible from localhost."""
+        create_target_control = self._get_target_control_entrypoint(
+            "list_running_targets")
+        targets = []
+        for ident in self._candidate_target_idents(0, ""):
+            target = self._connect_target_candidate(create_target_control, ident)
+            if target is None:
+                continue
+            targets.append(self._describe_target(target, ident))
+            self._shutdown_target(target)
+        return {"targets": targets, "count": len(targets)}
+
+    def _get_target_control_entrypoint(self, tool_name):
+        create_target_control = (
+            getattr(rd, "CreateTargetControl", None)
+            or getattr(rd, "RENDERDOC_CreateTargetControl", None)
+        )
+        if create_target_control is None:
+            raise ValueError(
+                "This RenderDoc Python build does not expose CreateTargetControl; "
+                "%s is unavailable" % tool_name)
+        return create_target_control
+
+    def _describe_target(self, target, ident):
+        return {
+            "ident": int(ident),
+            "pid": self._get_target_pid(target),
+            "target_name": self._get_target_name(target),
+            "target_api": self._get_target_api(target),
+            "connected": not self._target_disconnected(target),
+        }
+
+    def _format_targets(self, targets):
+        if not targets:
+            return "none"
+        parts = []
+        for target in targets:
+            parts.append(
+                "ident=%s pid=%s name=%s api=%s connected=%s"
+                % (
+                    target.get("ident", ""),
+                    target.get("pid", ""),
+                    target.get("target_name", ""),
+                    target.get("target_api", ""),
+                    target.get("connected", ""),
+                )
+            )
+        return "; ".join(parts)
+
+    def _as_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in ("0", "false", "no", "off")
+        return bool(value)
 
     def get_target_status(self, session_id):
         """Return whether a launched TargetControl session is still usable."""
@@ -305,6 +440,8 @@ class CaptureManager:
             "status": "running" if controllable else "disconnected",
             "pid": session.get("pid", 0),
             "ident": session.get("ident", 0),
+            "target_name": self._get_target_name(target) or session.get("target_name", ""),
+            "target_api": self._get_target_api(target) or session.get("target_api", ""),
             "exe_path": session.get("exe_path", ""),
             "working_dir": session.get("working_dir", ""),
             "cmd_line": session.get("cmd_line", ""),
@@ -544,28 +681,143 @@ class CaptureManager:
         except Exception:
             return str(exec_result)
 
-    def _connect_target(self, create_target_control, ident, timeout_seconds):
-        candidates = []
-        for candidate in (ident + 1, ident + 2, ident, ident - 1):
-            if candidate > 0 and candidate not in candidates:
-                candidates.append(candidate)
-
+    def _connect_target(self, create_target_control, ident, timeout_seconds,
+                        target_process_name="", graphics_api="auto"):
+        expected_name = (target_process_name or "").strip()
+        expected_api = self._normalize_graphics_api(graphics_api)
+        fallback_target = None
+        fallback_ident = 0
         deadline = time.time() + max(float(timeout_seconds), 5.0)
+
         while time.time() < deadline:
-            for candidate in list(candidates):
-                try:
-                    target = create_target_control(
-                        "", int(candidate), "renderdoc-mcp", True)
-                    if target:
-                        return target
-                except Exception:
-                    pass
-            for offset in range(3, 11):
-                for candidate in (ident + offset, ident - offset):
-                    if candidate > 0 and candidate not in candidates:
-                        candidates.append(candidate)
+            candidate_idents = self._candidate_target_idents(ident, expected_name)
+            for candidate in candidate_idents:
+                if candidate <= 0:
+                    continue
+                if fallback_target is not None and candidate == fallback_ident:
+                    continue
+
+                target = self._connect_target_candidate(create_target_control, candidate)
+                if target is None:
+                    continue
+
+                target_name = self._get_target_name(target)
+                target_api = self._get_target_api(target)
+                if expected_name and not self._target_name_matches(target_name, expected_name):
+                    self._shutdown_target(target)
+                    continue
+
+                if not expected_name:
+                    return target
+
+                if self._target_api_matches(target_api, expected_api):
+                    if fallback_target is not None:
+                        self._shutdown_target(fallback_target)
+                    return target
+
+                if fallback_target is None:
+                    fallback_target = target
+                    fallback_ident = candidate
+                else:
+                    self._shutdown_target(target)
+
+            if fallback_target is not None:
+                if self._target_disconnected(fallback_target):
+                    fallback_target = None
+                    fallback_ident = 0
+                elif self._target_api_matches(
+                        self._get_target_api(fallback_target), expected_api):
+                    return fallback_target
+                else:
+                    self._receive_message(fallback_target)
+
             time.sleep(1.0)
-        return None
+
+        return fallback_target
+
+    def _candidate_target_idents(self, ident, expected_name=""):
+        fallback = []
+        for candidate in (ident + 1, ident + 2, ident, ident - 1):
+            if candidate > 0 and candidate not in fallback:
+                fallback.append(candidate)
+        for offset in range(3, 11):
+            for candidate in (ident + offset, ident - offset):
+                if candidate > 0 and candidate not in fallback:
+                    fallback.append(candidate)
+
+        enumerated = self._enumerate_target_idents()
+        candidates = enumerated + fallback if expected_name else fallback + enumerated
+        result = []
+        for candidate in candidates:
+            if candidate > 0 and candidate not in result:
+                result.append(candidate)
+        return result
+
+    def _enumerate_target_idents(self):
+        enumerate_targets = (
+            getattr(rd, "EnumerateRemoteTargets", None)
+            or getattr(rd, "RENDERDOC_EnumerateRemoteTargets", None)
+        )
+        if enumerate_targets is None:
+            return []
+
+        idents = []
+        next_ident = 0
+        for _ in range(128):
+            try:
+                ident = int(enumerate_targets("", next_ident))
+            except Exception:
+                break
+            if ident <= 0 or ident in idents:
+                break
+            idents.append(ident)
+            next_ident = ident
+        return idents
+
+    def _connect_target_candidate(self, create_target_control, ident):
+        try:
+            return create_target_control("", int(ident), "renderdoc-mcp", True)
+        except Exception:
+            return None
+
+    def _target_name_matches(self, target_name, expected_name):
+        target = (target_name or "").lower()
+        expected = (expected_name or "").lower()
+        if not expected:
+            return True
+        names = [expected]
+        if expected.endswith(".exe"):
+            names.append(expected[:-4])
+        else:
+            names.append(expected + ".exe")
+        return any(name and name in target for name in names)
+
+    def _target_api_matches(self, target_api, expected_api):
+        api = (target_api or "").lower()
+        expected = (expected_api or "auto").lower()
+        if not api:
+            return False
+        if expected in ("", "auto"):
+            return True
+        return expected in api
+
+    def _get_target_name(self, target):
+        try:
+            return str(target.GetTarget())
+        except Exception:
+            return ""
+
+    def _get_target_api(self, target):
+        try:
+            return str(target.GetAPI())
+        except Exception:
+            return ""
+
+    def _shutdown_target(self, target):
+        try:
+            target.Shutdown()
+        except Exception:
+            pass
 
     def _wait_for_capture_file(self, target, exe_path, capture_template,
                                output_path, timeout_seconds, min_mtime=0):

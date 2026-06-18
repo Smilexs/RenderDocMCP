@@ -46,6 +46,8 @@ class RequestHandler:
             "open_capture": self._handle_open_capture,
             "capture_frame": self._handle_capture_frame,
             "launch_application": self._handle_launch_application,
+            "connect_running_target": self._handle_connect_running_target,
+            "list_running_targets": self._handle_list_running_targets,
             "get_target_status": self._handle_get_target_status,
             "trigger_capture": self._handle_trigger_capture,
             "close_target": self._handle_close_target,
@@ -486,7 +488,27 @@ class RequestHandler:
             params.get("working_dir", params.get("workingDir", "")),
             params.get("cmd_line", params.get("cmdLine", "")),
             params.get("graphics_api", params.get("graphicsApi", "auto")),
+            params.get(
+                "target_process_name",
+                params.get("targetProcessName", params.get("target_name", params.get("targetName", ""))),
+            ),
+            params.get("connect_target", params.get("connectTarget", True)),
         )
+
+    def _handle_connect_running_target(self, params):
+        """Handle connect_running_target request"""
+        return self.facade.connect_running_target(
+            params.get(
+                "target_process_name",
+                params.get("targetProcessName", params.get("target_name", params.get("targetName", ""))),
+            ),
+            params.get("graphics_api", params.get("graphicsApi", "auto")),
+            int(params.get("timeout_seconds", params.get("timeoutSeconds", 60))),
+        )
+
+    def _handle_list_running_targets(self, params):
+        """Handle list_running_targets request"""
+        return self.facade.list_running_targets()
 
     def _handle_get_target_status(self, params):
         """Handle get_target_status request"""

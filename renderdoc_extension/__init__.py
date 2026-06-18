@@ -37,9 +37,10 @@ def register(version, ctx):
     facade = renderdoc_facade.RenderDocFacade(ctx)
     handler = request_handler.RequestHandler(facade)
 
-    # Start socket server
+    # Start socket server (dispatch handler calls onto RenderDoc's UI thread)
+    dispatcher = socket_server.QtMainThreadDispatcher()
     _server = socket_server.MCPBridgeServer(
-        host="127.0.0.1", port=19876, handler=handler
+        host="127.0.0.1", port=19876, handler=handler, dispatcher=dispatcher
     )
     _server.start()
 
