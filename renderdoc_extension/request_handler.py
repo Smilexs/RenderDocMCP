@@ -448,6 +448,10 @@ class RequestHandler:
             output_path,
             int(params.get("instance", 0)),
             int(params.get("view", 0)),
+            bool(params.get("graft_uv", True)),
+            int(params.get("uv0_slot", 3)),
+            int(params.get("uv1_slot", 4)),
+            int(params.get("color_slot", 1)),
         )
 
     def _handle_list_captures(self, params):

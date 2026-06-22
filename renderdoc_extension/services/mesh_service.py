@@ -627,7 +627,78 @@ class MeshService:
     # ------------------------------------------------------------------ #
     #  Public: export PostVS (skinned) world-space mesh to JSON           #
     # ------------------------------------------------------------------ #
-    def export_postvs_to_file(self, event_id, output_path, instance=0, view=0):
+    def _graft_input_uvs(self, controller, event_id, num_verts,
+                         uv0_slot, uv1_slot, color_slot):
+        """Pull pose-invariant attrs (uv0/uv1/color) from the INPUT VB for PostVS.
+
+        The PostVS fast path decodes only SV_Position; its other varyings lose their
+        semantic names (generic interpolators), so we cannot reliably label them uv0/
+        uv1. But UVs and vertex color are POSE-INVARIANT — skinning/vertex-anim moves
+        position & normal, never texcoords. For an INDEXED draw the PostVS unique-
+        vertex order matches the input VB 1:1 (same IB, num_verts = max(index)+1), so
+        input-VB attribute i maps onto PostVS vertex i directly.
+
+        Returns (graft_dict, diag). graft_dict may contain "uv0"/"uv1"/"color".
+        Grafting is skipped (with a diag reason) if the input vertex count differs.
+        """
+        diag = {}
+        data, err = self._extract(controller, event_id)
+        if err:
+            diag["skipped"] = "input _extract failed: %s" % err
+            return {}, diag
+
+        in_n = data["num_vertices"]
+        diag["input_num_vertices"] = in_n
+        if in_n != num_verts:
+            # 1:1 correspondence no longer guaranteed (e.g. non-indexed draw or a
+            # PostVS that re-emits vertices). Don't graft mismatched data.
+            diag["skipped"] = "vertex count mismatch (input=%d postvs=%d)" % (
+                in_n, num_verts)
+            return {}, diag
+
+        attrs_by_name = {(a.get("name") or "").upper(): a for a in data["attributes"]}
+        slot_attrs = {}
+        for a in data["attributes"]:
+            slot_attrs.setdefault(a["vertex_buffer_slot"], []).append(a)
+        has_named = any(
+            tok in nm for nm in attrs_by_name
+            for tok in ("POSITION", "NORMAL", "TANGENT", "TEXCOORD", "COLOR")
+        )
+
+        def by_name(keyword):
+            if not keyword:
+                return None
+            for nm, a in attrs_by_name.items():
+                if keyword in nm:
+                    return a
+            return None
+
+        def by_slot(slot):
+            here = slot_attrs.get(slot)
+            return here[0] if here else None
+
+        def resolve(slot, keyword):
+            if has_named:
+                return by_name(keyword)
+            return by_slot(slot)
+
+        graft = {}
+        uv0 = resolve(uv0_slot, "TEXCOORD0")
+        uv1 = resolve(uv1_slot, "TEXCOORD1")
+        col = resolve(color_slot, "COLOR")
+        if uv0 is not None:
+            graft["uv0"] = [[v[0], v[1]] for v in uv0["values"]]
+        if uv1 is not None:
+            graft["uv1"] = [[v[0], v[1]] for v in uv1["values"]]
+        if col is not None:
+            graft["color"] = [list(v) for v in col["values"]]
+        diag["resolved_by"] = "name" if has_named else "slot"
+        diag["grafted"] = sorted(graft.keys())
+        diag["available_names"] = sorted(attrs_by_name)
+        return graft, diag
+
+    def export_postvs_to_file(self, event_id, output_path, instance=0, view=0,
+                              graft_uv=True, uv0_slot=3, uv1_slot=4, color_slot=1):
         """Extract VS-output (skinned, post-transform) vertices and write world-space JSON.
 
         For SKINNED meshes the input VB holds bind-pose vertices; the GPU skins them
@@ -638,7 +709,15 @@ class MeshService:
         The output JSON matches export_mesh_to_file's schema (num_indices,
         num_vertices, indices, position) so RDCMeshBuilder can consume it directly.
         position is WORLD space (place the GameObject at Transform origin; align the
-        RDC camera with absolute coords). No normals/uv (clip-only fast path).
+        RDC camera with absolute coords).
+
+        UV0/UV1 (and vertex COLOR) are POSE-INVARIANT, so when graft_uv is True
+        (default) they are copied from the INPUT VB onto the matching PostVS vertices
+        (1:1 for indexed draws). This makes the PostVS .asset texture-mappable without
+        a manual graft step. Normals/tangents are still omitted (bind-pose values are
+        wrong for the skinned pose; Unity recomputes them). uv0_slot/uv1_slot/color_slot
+        are used only when input attributes are generically named (DXBC/ANGLE); GL
+        hlslcc captures resolve by semantic name automatically.
         """
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
@@ -690,6 +769,21 @@ class MeshService:
                 "indices": pv["indices"],
                 "position": out_pos,
             }
+
+            # Graft pose-invariant UV0/UV1/COLOR from the input VB (1:1 for indexed
+            # draws). PostVS varyings lose semantic names, so this is the reliable
+            # way to keep the skinned mesh texture-mappable.
+            graft_diag = {}
+            if graft_uv:
+                try:
+                    graft, graft_diag = self._graft_input_uvs(
+                        controller, event_id, pv["num_vertices"],
+                        uv0_slot, uv1_slot, color_slot)
+                    raw_json.update(graft)
+                except Exception as e:
+                    import traceback
+                    graft_diag = {"error": "%s\n%s" % (e, traceback.format_exc())}
+
             try:
                 out_dir = os.path.dirname(output_path)
                 if out_dir and not os.path.isdir(out_dir):
@@ -716,8 +810,12 @@ class MeshService:
                 "position_bounds": {
                     "x": rng(out_pos, 0), "y": rng(out_pos, 1), "z": rng(out_pos, 2)
                 },
+                "has_uv0": "uv0" in raw_json,
+                "has_uv1": "uv1" in raw_json,
+                "has_color": "color" in raw_json,
                 "matrix_vp_raw": vpdiag.get("matrix_vp_raw"),
                 "_postvs_diag": pv.get("_diag"),
+                "_graft_diag": graft_diag,
                 "_vp_diag": {k: v for k, v in vpdiag.items() if k != "matrix_vp_raw"},
             }
           except Exception as e:

@@ -97,6 +97,7 @@ RenderDocMCP/
 | `get_mesh_data` | 提取 Draw 的解码后顶点/索引数据（含属性按 format 解析） |
 | `get_world_matrix` | 从 VS cb0 读取 Unity ObjectToWorld / WorldToObject 矩阵 |
 | `export_mesh_to_file` | 将 Draw 的顶点/索引数据写入 JSON 文件，可烘焙到世界空间 |
+| `export_postvs_to_file` | 蒙皮 mesh：写 VS 输出(世界空间)顶点；`graft_uv=True`(默认)从输入VB自动嵌接 uv0/uv1/color |
 | `list_captures` | 列出目录中的 .rdc 文件 |
 | `open_capture` | 在 RenderDoc 中打开指定捕获文件 |
 | `capture_frame` | 通过 RenderDoc 启动目标程序，等待若干帧后抓取一帧并自动打开 |

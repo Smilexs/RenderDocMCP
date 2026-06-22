@@ -914,6 +914,10 @@ def export_postvs_to_file(
     output_path: str,
     instance: int = 0,
     view: int = 0,
+    graft_uv: bool = True,
+    uv0_slot: int = 3,
+    uv1_slot: int = 4,
+    color_slot: int = 1,
 ) -> dict:
     """
     Extract VS-OUTPUT (post-skinning / post-transform) vertices for a draw and write
@@ -932,24 +936,37 @@ def export_postvs_to_file(
     Output JSON matches export_mesh_to_file's schema (num_indices, num_vertices,
     indices, position) so RDCMeshBuilder consumes it directly. position is WORLD space:
     place the GameObject at Transform origin (identity), and align the RDC camera using
-    absolute world coords. NOTE: this fast path writes POSITION + INDICES only (no
-    normals/uv yet); normals can be recomputed in Unity, and UVs taken from the
-    bind-pose export if needed.
+    absolute world coords.
+
+    UV0/UV1 (and vertex COLOR) are POSE-INVARIANT (skinning moves position/normal, never
+    texcoords). When graft_uv is True (default) they are copied from the INPUT VB onto
+    the matching PostVS vertices (1:1 for indexed draws), so the PostVS mesh is texture-
+    mappable out of the box — no manual graft step needed. Normals/tangents are still
+    omitted (bind-pose values are wrong for the skinned pose; recompute them in Unity).
 
     Args:
         event_id: The draw call event ID (a skinned mesh draw).
         output_path: Absolute path on the RenderDoc host to write the JSON to.
         instance: Instance index for instanced draws (default 0).
         view: Multiview index (default 0).
+        graft_uv: Copy UV0/UV1/COLOR from the input VB (default True). Set False for the
+            old position-only fast path.
+        uv0_slot/uv1_slot/color_slot: Input-VB slot fallback used ONLY when input
+            attributes are generically named (DXBC/ANGLE). GL hlslcc captures resolve by
+            semantic name (in_TEXCOORD0/1, in_COLOR0) automatically and ignore these.
 
-    Returns metadata: output_path, counts, world-space position bounds, the MatrixVP
-    used, and diagnostics.
+    Returns metadata: output_path, counts, world-space position bounds, has_uv0/has_uv1/
+    has_color flags, the MatrixVP used, and diagnostics (incl. _graft_diag).
     """
     return bridge.call("export_postvs_to_file", {
         "event_id": event_id,
         "output_path": output_path,
         "instance": instance,
         "view": view,
+        "graft_uv": graft_uv,
+        "uv0_slot": uv0_slot,
+        "uv1_slot": uv1_slot,
+        "color_slot": color_slot,
     })
 
 

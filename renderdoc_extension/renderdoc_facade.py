@@ -316,6 +316,13 @@ class RenderDocFacade:
             o2w_offset, w2o_offset,
         )
 
-    def export_postvs_to_file(self, event_id, output_path, instance=0, view=0):
-        """Extract VS-output (skinned) world-space vertices, write JSON to disk"""
-        return self._mesh.export_postvs_to_file(event_id, output_path, instance, view)
+    def export_postvs_to_file(self, event_id, output_path, instance=0, view=0,
+                              graft_uv=True, uv0_slot=3, uv1_slot=4, color_slot=1):
+        """Extract VS-output (skinned) world-space vertices, write JSON to disk.
+
+        graft_uv (default True) copies pose-invariant UV0/UV1/COLOR from the input VB
+        onto the matching PostVS vertices so the skinned mesh stays texture-mappable.
+        """
+        return self._mesh.export_postvs_to_file(
+            event_id, output_path, instance, view,
+            graft_uv, uv0_slot, uv1_slot, color_slot)
