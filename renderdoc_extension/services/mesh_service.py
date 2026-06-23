@@ -440,15 +440,31 @@ class MeshService:
         blocks = list(getattr(refl, "constantBlocks", []) or [])
         diag["blocks"] = [getattr(b, "name", "") for b in blocks]
 
-        def _find_matrixvp(vars_list):
-            """Recursively locate the variable whose name contains 'MatrixVP'."""
+        def _find_named(vars_list, needle):
+            """Recursively locate the variable whose name contains `needle`."""
             for v in vars_list:
                 nm = getattr(v, "name", "") or ""
-                if "MatrixVP" in nm:
+                if needle in nm:
                     return v
                 mem = getattr(v, "members", None)
                 if mem:
-                    found = _find_matrixvp(list(mem))
+                    found = _find_named(list(mem), needle)
+                    if found is not None:
+                        return found
+            return None
+
+        def _find_camera_pos(vars_list):
+            """Locate _WorldSpaceCameraPos (float3) for camera-relative VP rebuild."""
+            for v in vars_list:
+                nm = getattr(v, "name", "") or ""
+                if "WorldSpaceCameraPos" in nm:
+                    try:
+                        return [float(x) for x in v.value.f32v[:3]]
+                    except Exception:
+                        return None
+                mem = getattr(v, "members", None)
+                if mem:
+                    found = _find_camera_pos(list(mem))
                     if found is not None:
                         return found
             return None
@@ -473,6 +489,8 @@ class MeshService:
                 pass
             return None
 
+        # Read every constant block's variables once, then search them.
+        all_vars = []
         attempts = []
         for i, blk in enumerate(blocks):
             try:
@@ -492,8 +510,11 @@ class MeshService:
             except Exception as e:
                 attempts.append((i, "GetCBufferVariableContents err: %s" % e))
                 continue
+            all_vars.append((i, blk, list(variables or [])))
 
-            target = _find_matrixvp(list(variables or []))
+        # Preferred: standard unity_MatrixVP (clip = MatrixVP @ world, no camera offset).
+        for i, blk, variables in all_vars:
+            target = _find_named(variables, "MatrixVP")
             if target is None:
                 continue
             cols = _extract_4x4(target)
@@ -504,9 +525,35 @@ class MeshService:
             diag["block_name"] = getattr(blk, "name", "")
             diag["var_name"] = getattr(target, "name", "")
             diag["matrix_vp_raw"] = [x for row in cols for x in row]
+            diag["camera_relative"] = False
             return cols, diag
 
-        diag["error"] = "MatrixVP not found via GetCBufferVariableContents"
+        # Fallback: camera-relative VP (e.g. NSH ZeroViewProjMatrix).
+        # The shader computes clip = ZeroViewProj @ (world - cameraPos), so the
+        # caller must add cameraPos back after the inverse-transform. We surface
+        # the camera position via diag["camera_offset"].
+        for i, blk, variables in all_vars:
+            target = _find_named(variables, "ZeroViewProjMatrix")
+            if target is None:
+                continue
+            cols = _extract_4x4(target)
+            if cols is None:
+                attempts.append((i, "found ZeroViewProjMatrix but could not read 16 floats"))
+                continue
+            cam = None
+            for _, _, vs in all_vars:
+                cam = _find_camera_pos(vs)
+                if cam is not None:
+                    break
+            diag["block_index"] = i
+            diag["block_name"] = getattr(blk, "name", "")
+            diag["var_name"] = getattr(target, "name", "")
+            diag["matrix_vp_raw"] = [x for row in cols for x in row]
+            diag["camera_relative"] = True
+            diag["camera_offset"] = cam
+            return cols, diag
+
+        diag["error"] = "MatrixVP/ZeroViewProjMatrix not found via GetCBufferVariableContents"
         diag["attempts"] = attempts
         return None, diag
 
@@ -745,6 +792,11 @@ class MeshService:
                 result["error"] = "MatrixVP not invertible"
                 return
 
+            # Camera-relative VP (ZeroViewProjMatrix) reconstructs (world - cameraPos);
+            # add cameraPos back to recover absolute world coordinates.
+            cam = vpdiag.get("camera_offset") if vpdiag.get("camera_relative") else None
+            cx, cy, cz = (cam if cam else (0.0, 0.0, 0.0))
+
             clip = pv["clip_positions"]
             out_pos = []
             bad = 0
@@ -758,7 +810,7 @@ class MeshService:
                     bad += 1
                     out_pos.append([0.0, 0.0, 0.0])
                 else:
-                    out_pos.append([wx/ww, wy/ww, wz/ww])
+                    out_pos.append([wx/ww + cx, wy/ww + cy, wz/ww + cz])
 
             raw_json = {
                 "event_id": event_id,
