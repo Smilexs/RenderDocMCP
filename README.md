@@ -542,7 +542,7 @@ C:\Users\<用户名>\AppData\Local\Programs\Inno Setup 6\ISCC.exe
 成功后会生成：
 
 ```text
-dist\windows\RenderDocMCP-Setup-1.0.0.exe
+dist\windows\RenderDocMCP-Setup-1.0.1.exe
 ```
 
 如果后续版本号在 `pyproject.toml` 中变更，输出文件名会随版本号变化，例如：
