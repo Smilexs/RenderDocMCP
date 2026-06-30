@@ -856,12 +856,12 @@ def export_mesh_to_file(
     event_id: int,
     output_path: str,
     bake_world: bool = True,
-    pos_slot: int = 0,
-    normal_slot: int = 1,
-    tangent_slot: int = 2,
-    uv0_slot: int = 3,
-    uv1_slot: int = 4,
-    extra_slot: int = 5,
+    pos_slot: int = -1,
+    normal_slot: int = -1,
+    tangent_slot: int = -1,
+    uv0_slot: int = -1,
+    uv1_slot: int = -1,
+    extra_slot: int = -1,
     o2w_offset: int = 32,
     w2o_offset: int = 96,
 ) -> dict:
@@ -885,9 +885,9 @@ def export_mesh_to_file(
             GameObject sits at Transform origin and matches the captured frame, so
             multiple extracted draws line up with each other automatically.
         pos_slot/normal_slot/tangent_slot/uv0_slot/uv1_slot/extra_slot: which
-            vertex-buffer slot carries each semantic. Defaults match the common Unity
-            character VS (v0=POSITION v1=NORMAL v2=TANGENT v3=UV0 v4=UV1 v5=extra).
-            Confirm against the VS disassembly; adjust if the layout differs.
+            vertex-buffer slot carries each semantic. Negative values (the default)
+            let the RenderDoc extension infer slots from semantics and component
+            counts. Use non-negative values for explicit overrides.
         o2w_offset/w2o_offset: byte offsets of the matrices in cb0 (see get_world_matrix).
 
     Returns metadata: output_path, counts, which channels were written, position

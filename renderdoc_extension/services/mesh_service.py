@@ -48,6 +48,69 @@ def _decode_attr(raw, offset, fmt_name, comp_count, comp_bytewidth, comp_type):
     return list(struct.unpack_from("<%df" % comp_count, raw, offset))
 
 
+def _rdc_auto_has_components(value, count):
+    try:
+        return value is not None and len(value) >= count
+    except TypeError:
+        return False
+
+
+def _rdc_auto_values_have_components(values, count):
+    return bool(values) and all(
+        _rdc_auto_has_components(v, count) for v in values)
+
+
+def _rdc_auto_vec2_list(values):
+    if not _rdc_auto_values_have_components(values, 2):
+        return None
+    return [[v[0], v[1]] for v in values]
+
+
+def _rdc_auto_attr_components(attr):
+    try:
+        return int(attr.get("components", 0))
+    except Exception:
+        pass
+    values = attr.get("values") or []
+    if values:
+        try:
+            return len(values[0])
+        except TypeError:
+            return 0
+    return 0
+
+
+def _rdc_auto_attr_text(attr):
+    parts = [
+        attr.get("name") or "",
+        attr.get("semantic_name") or "",
+        str(attr.get("semantic_index", "")),
+    ]
+    return " ".join(parts).upper()
+
+
+def _rdc_auto_attr_matches(attr, keyword):
+    if not keyword:
+        return False
+    text = _rdc_auto_attr_text(attr)
+    keyword = keyword.upper()
+    if keyword in text:
+        return True
+    if keyword.startswith("TEXCOORD"):
+        semantic = (attr.get("semantic_name") or "").upper()
+        if "TEXCOORD" not in semantic:
+            return False
+        try:
+            expected = int(keyword[len("TEXCOORD"):])
+        except ValueError:
+            return False
+        try:
+            return int(attr.get("semantic_index", 0)) == expected
+        except Exception:
+            return False
+    return False
+
+
 def _get_cbuffer_bind(pipe, stage_enum, slot):
     """Return (resource_id, byte_offset, byte_size) for a constant buffer bind.
 
@@ -275,6 +338,7 @@ class MeshService:
             attributes.append({
                 "name": inp.name,
                 "semantic_name": getattr(inp, "semanticName", ""),
+                "semantic_index": getattr(inp, "semanticIndex", 0),
                 "vertex_buffer_slot": slot,
                 "byte_offset": attr_offset,
                 "format": fmt_name,
@@ -884,8 +948,8 @@ class MeshService:
     #  Public: extract mesh, optionally bake to world, write JSON to disk #
     # ------------------------------------------------------------------ #
     def export_mesh_to_file(self, event_id, output_path, bake_world=True,
-                            pos_slot=0, normal_slot=1, tangent_slot=2,
-                            uv0_slot=3, uv1_slot=4, extra_slot=5,
+                            pos_slot=-1, normal_slot=-1, tangent_slot=-1,
+                            uv0_slot=-1, uv1_slot=-1, extra_slot=-1,
                             o2w_offset=32, w2o_offset=96):
         """Decode the mesh at event_id and write a compact raw JSON to disk.
 
@@ -893,9 +957,8 @@ class MeshService:
         arrays are written to *output_path* on the RenderDoc host, and only small
         metadata (counts, value ranges, the world matrix, output path) is returned.
 
-        Attribute slots map TEXCOORDn vertex-buffer slots to semantics. Defaults
-        match the observed Unity character VS layout
-        (v0=POSITION v1=NORMAL v2=TANGENT v3=UV0 v4=UV1 v5=extra/aniso).
+        Negative attribute slots use automatic semantic/component inference.
+        Non-negative slots are explicit caller overrides.
 
         When bake_world is True, position/normal/tangent.xyz are transformed into
         world space using the VS cb0 matrices, so the resulting GameObject can sit
@@ -913,52 +976,128 @@ class MeshService:
                 result["error"] = err
                 return
 
-            # A single VB slot may carry multiple interleaved semantics (e.g. NSH
-            # packs POSITION@0 / NORMAL@12 / TANGENT@20 all in slot 0), and the
-            # caller's slot params assume one-semantic-per-slot. When attribute
-            # names carry real semantics (GL hlslcc: in_POSITION0/in_NORMAL0/...)
-            # resolve by name; only fall back to slot indexing for the DXBC/ANGLE
-            # case where every attribute is generically named TEXCOORDn.
+            # Negative slots mean auto: use semantics when present, then fall back
+            # to component counts in slot order. Non-negative slots remain explicit
+            # caller overrides.
+            attrs = list(data["attributes"])
             slot_attrs = {}
-            for a in data["attributes"]:
+            for a in attrs:
                 slot_attrs.setdefault(a["vertex_buffer_slot"], []).append(a)
-            attrs_by_name = {(a.get("name") or "").upper(): a for a in data["attributes"]}
+            attrs_by_name = {
+                (a.get("name") or "").upper(): a for a in attrs
+            }
+            claimed = set()
+            auto_used = False
 
-            def by_name(keyword):
+            def attr_id(a):
+                try:
+                    return attrs.index(a)
+                except ValueError:
+                    return id(a)
+
+            def by_name(keyword, min_components=0, exact_components=None):
                 if not keyword:
                     return None
-                for nm, a in attrs_by_name.items():
-                    if keyword in nm:
+                for a in attrs:
+                    if attr_id(a) in claimed:
+                        continue
+                    comps = _rdc_auto_attr_components(a)
+                    if min_components and comps < min_components:
+                        continue
+                    if exact_components is not None and comps != exact_components:
+                        continue
+                    if _rdc_auto_attr_matches(a, keyword):
                         return a
                 return None
 
             has_named_semantics = any(
-                tok in nm for nm in attrs_by_name
-                for tok in ("POSITION", "NORMAL", "TANGENT")
+                _rdc_auto_attr_matches(a, tok)
+                for a in attrs
+                for tok in (
+                    "POSITION", "NORMAL", "TANGENT",
+                    "TEXCOORD0", "TEXCOORD1",
+                )
             )
 
-            def by_slot(slot):
+            def by_slot(slot, name_keyword=None):
                 here = slot_attrs.get(slot)
-                return here[0] if here else None
+                if not here:
+                    return None
+                if name_keyword:
+                    for a in here:
+                        if _rdc_auto_attr_matches(a, name_keyword):
+                            return a
+                return here[0]
+
+            def claim(a):
+                if a is not None:
+                    claimed.add(attr_id(a))
+                return a
+
+            def first_by_components(min_components=0, exact_components=None):
+                for a in attrs:
+                    if attr_id(a) in claimed:
+                        continue
+                    comps = _rdc_auto_attr_components(a)
+                    if min_components and comps < min_components:
+                        continue
+                    if exact_components is not None and comps != exact_components:
+                        continue
+                    return a
+                return None
 
             def resolve(slot, name_keyword):
+                nonlocal auto_used
+                if slot is not None and slot >= 0:
+                    return claim(by_slot(slot, name_keyword))
+
+                auto_used = True
                 if has_named_semantics:
-                    a = by_name(name_keyword)
+                    min_components = 0
+                    if name_keyword in ("POSITION", "NORMAL", "TANGENT"):
+                        min_components = 3
+                    elif name_keyword in ("TEXCOORD0", "TEXCOORD1"):
+                        min_components = 2
+                    a = by_name(name_keyword, min_components=min_components)
                     if a is not None:
-                        return a
-                    # name mode but this role has no match (e.g. no UV1) -> absent
-                    return None
-                return by_slot(slot)
+                        return claim(a)
+
+                if name_keyword == "POSITION":
+                    return claim(first_by_components(min_components=3))
+                if name_keyword == "NORMAL":
+                    return claim(first_by_components(exact_components=3))
+                if name_keyword == "TANGENT":
+                    return claim(first_by_components(exact_components=4))
+                if name_keyword in ("TEXCOORD0", "TEXCOORD1"):
+                    return claim(first_by_components(exact_components=2))
+                return None
 
             def vals_of(a):
                 return a["values"] if a else None
 
-            pos = vals_of(resolve(pos_slot, "POSITION"))
-            nrm = vals_of(resolve(normal_slot, "NORMAL"))
-            tan = vals_of(resolve(tangent_slot, "TANGENT"))
-            uv0 = vals_of(resolve(uv0_slot, "TEXCOORD0"))
-            uv1 = vals_of(resolve(uv1_slot, "TEXCOORD1"))
-            extra = vals_of(resolve(extra_slot, None))
+            def resolved_slot(a):
+                return a.get("vertex_buffer_slot") if a is not None else None
+
+            pos_attr = resolve(pos_slot, "POSITION")
+            nrm_attr = resolve(normal_slot, "NORMAL")
+            tan_attr = resolve(tangent_slot, "TANGENT")
+            uv0_attr = resolve(uv0_slot, "TEXCOORD0")
+            uv1_attr = resolve(uv1_slot, "TEXCOORD1")
+            extra_attr = resolve(extra_slot, None)
+
+            pos = vals_of(pos_attr)
+            nrm = vals_of(nrm_attr)
+            tan = vals_of(tan_attr)
+            uv0 = _rdc_auto_vec2_list(vals_of(uv0_attr))
+            uv1 = _rdc_auto_vec2_list(vals_of(uv1_attr))
+            extra = vals_of(extra_attr)
+
+            if not _rdc_auto_values_have_components(pos, 3):
+                pos = None
+            if not _rdc_auto_values_have_components(nrm, 3):
+                nrm = None
+            if not _rdc_auto_values_have_components(tan, 3):
+                tan = None
 
             if pos is None:
                 result["error"] = "no POSITION at slot %d (slots=%s, names=%s)" % (
@@ -1054,12 +1193,16 @@ class MeshService:
                 "object_to_world_columns": [list(c) for c in o2w] if o2w else None,
                 "world_to_object_rows": [list(r) for r in w2o] if w2o else None,
                 "slot_map": {
-                    "position": pos_slot, "normal": normal_slot, "tangent": tangent_slot,
-                    "uv0": uv0_slot, "uv1": uv1_slot, "extra": extra_slot,
+                    "position": resolved_slot(pos_attr),
+                    "normal": resolved_slot(nrm_attr) if nrm is not None else None,
+                    "tangent": resolved_slot(tan_attr) if tan is not None else None,
+                    "uv0": resolved_slot(uv0_attr) if uv0 is not None else None,
+                    "uv1": resolved_slot(uv1_attr) if uv1 is not None else None,
+                    "extra": resolved_slot(extra_attr) if extra is not None else None,
                 },
                 "available_slots": sorted(slot_attrs),
                 "attribute_names": sorted(attrs_by_name),
-                "resolved_by": "name" if has_named_semantics else "slot",
+                "resolved_by": "auto" if auto_used else "slot",
                 "_matrix_diag": mdiag,
             }
           except Exception as e:

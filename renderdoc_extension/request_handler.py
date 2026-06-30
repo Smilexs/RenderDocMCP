@@ -421,18 +421,22 @@ class RequestHandler:
         output_path = params.get("output_path")
         if not output_path:
             raise ValueError("output_path is required")
+
+        def param(snake_name, camel_name, default):
+            return params.get(snake_name, params.get(camel_name, default))
+
         return self.facade.export_mesh_to_file(
             int(event_id),
             output_path,
-            bool(params.get("bake_world", True)),
-            int(params.get("pos_slot", 0)),
-            int(params.get("normal_slot", 1)),
-            int(params.get("tangent_slot", 2)),
-            int(params.get("uv0_slot", 3)),
-            int(params.get("uv1_slot", 4)),
-            int(params.get("extra_slot", 5)),
-            int(params.get("o2w_offset", 32)),
-            int(params.get("w2o_offset", 96)),
+            bool(param("bake_world", "bakeWorld", True)),
+            int(param("pos_slot", "posSlot", -1)),
+            int(param("normal_slot", "normalSlot", -1)),
+            int(param("tangent_slot", "tangentSlot", -1)),
+            int(param("uv0_slot", "uv0Slot", -1)),
+            int(param("uv1_slot", "uv1Slot", -1)),
+            int(param("extra_slot", "extraSlot", -1)),
+            int(param("o2w_offset", "o2wOffset", 32)),
+            int(param("w2o_offset", "w2oOffset", 96)),
         )
 
     def _handle_export_postvs_to_file(self, params):

@@ -4,6 +4,8 @@ Provides thread-safe access to RenderDoc's ReplayController and CaptureContext.
 Uses BlockInvoke to marshal calls to the replay thread.
 """
 
+import traceback
+
 from .services import (
     CaptureManager,
     ActionService,
@@ -47,7 +49,23 @@ class RenderDocFacade:
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
-        self.ctx.Replay().BlockInvoke(callback)
+        callback_error = {}
+
+        def guarded_callback(controller):
+            try:
+                callback(controller)
+            except Exception as e:
+                callback_error["message"] = str(e)
+                callback_error["traceback"] = traceback.format_exc()
+
+        self.ctx.Replay().BlockInvoke(guarded_callback)
+        if callback_error:
+            raise RuntimeError(
+                "Replay callback failed: %s\n%s" % (
+                    callback_error["message"],
+                    callback_error["traceback"],
+                )
+            )
 
     # ==================== Capture Management ====================
 
@@ -305,8 +323,8 @@ class RenderDocFacade:
         return self._mesh.get_world_matrix(event_id, o2w_offset, w2o_offset)
 
     def export_mesh_to_file(self, event_id, output_path, bake_world=True,
-                            pos_slot=0, normal_slot=1, tangent_slot=2,
-                            uv0_slot=3, uv1_slot=4, extra_slot=5,
+                            pos_slot=-1, normal_slot=-1, tangent_slot=-1,
+                            uv0_slot=-1, uv1_slot=-1, extra_slot=-1,
                             o2w_offset=32, w2o_offset=96):
         """Decode mesh at an event, optionally bake to world space, write JSON to disk"""
         return self._mesh.export_mesh_to_file(
